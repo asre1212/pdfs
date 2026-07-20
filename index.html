@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0b1220" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="ScanShrink" />
+  <title>ScanShrink — PDF Scanner</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="icons/icon-180.png" />
+  <link rel="icon" href="icons/icon-192.png" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">📄</span>
+        <div>
+          <h1>ScanShrink</h1>
+          <p class="tag">Turn a photo-PDF into a small scanned PDF — 100% on your phone</p>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <!-- Step 1: pick a file -->
+      <section class="card" id="pickCard">
+        <label class="dropzone" id="dropzone">
+          <input type="file" id="fileInput" accept="application/pdf,.pdf" />
+          <span class="dz-icon">⬆️</span>
+          <span class="dz-title">Choose a PDF</span>
+          <span class="dz-sub">Tap to pick from the Files app</span>
+        </label>
+        <p class="privacy">🔒 Nothing is uploaded. All processing happens locally in Safari.</p>
+      </section>
+
+      <!-- Step 2: options + run -->
+      <section class="card hidden" id="optionsCard">
+        <div class="filemeta" id="filemeta"></div>
+
+        <div class="opt">
+          <div class="opt-label">Scan style</div>
+          <div class="segmented" id="modeSeg">
+            <button data-mode="bw" class="seg active">B&amp;W</button>
+            <button data-mode="gray" class="seg">Grayscale</button>
+            <button data-mode="color" class="seg">Color</button>
+          </div>
+          <p class="opt-hint" id="modeHint">Sharp black-on-white — smallest files, best for text documents.</p>
+        </div>
+
+        <div class="opt">
+          <div class="opt-label">Resolution <span class="val" id="dpiVal">150 DPI</span></div>
+          <input type="range" id="dpi" min="100" max="300" step="25" value="150" />
+          <p class="opt-hint">Lower = smaller file. 150 DPI is great for text; raise it if pages look soft.</p>
+        </div>
+
+        <div class="opt" id="qualityOpt">
+          <div class="opt-label">Quality <span class="val" id="qVal">65%</span></div>
+          <input type="range" id="quality" min="30" max="90" step="5" value="65" />
+          <p class="opt-hint">JPEG quality for grayscale/color pages. Lower = smaller file.</p>
+        </div>
+
+        <div class="actions">
+          <button class="btn ghost" id="resetBtn">Cancel</button>
+          <button class="btn primary" id="runBtn">Scan &amp; Shrink</button>
+        </div>
+      </section>
+
+      <!-- Step 3: progress -->
+      <section class="card hidden" id="progressCard">
+        <div class="prog-head">
+          <div class="spinner"></div>
+          <div>
+            <div class="prog-title" id="progTitle">Processing…</div>
+            <div class="prog-sub" id="progSub">Page 0 of 0</div>
+          </div>
+        </div>
+        <div class="progressbar"><div class="fill" id="progFill"></div></div>
+        <canvas id="preview" class="preview"></canvas>
+      </section>
+
+      <!-- Step 4: result -->
+      <section class="card hidden" id="resultCard">
+        <div class="result-icon">✅</div>
+        <h2 class="result-title">Done!</h2>
+        <div class="stats" id="stats"></div>
+        <a class="btn primary block" id="saveBtn" download>Save to Files</a>
+        <button class="btn ghost block" id="anotherBtn">Scan another PDF</button>
+        <p class="opt-hint center">Tap <b>Save to Files</b>, then choose the same folder your original is in to keep them together.</p>
+      </section>
+
+      <p class="err hidden" id="err"></p>
+    </main>
+
+    <footer class="foot">
+      <span id="offlineBadge" class="badge">● Ready offline</span>
+      <span class="dot">·</span>
+      <span>No servers · No tracking</span>
+    </footer>
+  </div>
+
+  <script src="vendor/pdf.min.js"></script>
+  <script src="vendor/pdf-lib.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
