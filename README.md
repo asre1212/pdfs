@@ -13,8 +13,10 @@ phone** and it even works with airplane mode on after the first load.
 ## ✨ What it does
 
 - 📥 **Pick a PDF from Files** (iCloud Drive, On My iPhone, etc.)
-- 🖼️ **Or turn images into a PDF** — pick one or more photos and each becomes a
-  page, run through the same scanned-look filter and shrink.
+- 🖼️ **Or turn photos into a PDF** — pick one or more images straight from the
+  **Photos** app (or Files). Handles **HEIC** (iPhone photos), **JPEG**, and
+  **PNG**, fixes their rotation, and makes each one a page run through the same
+  scanned-look filter and shrink.
 - 🖨️ **Three scan styles**
   - **B&W** — sharp black-on-white via adaptive thresholding. Smallest files. Best for text.
   - **Grayscale** — neutral, contrast-boosted. Good for shaded pages or pencil.
@@ -66,8 +68,9 @@ app's own code; **no document or image ever leaves your device.**
 
 1. Choose a source at the top:
    - **Shrink a PDF** — tap **Choose a PDF** and pick a file from the Files app.
-   - **Images → PDF** — tap **Choose images** and pick one or more photos; each
-     becomes a page in the output PDF.
+   - **Images → PDF** — tap **Choose photos** and pick one or more images from
+     the **Photos** app (or Files). HEIC, JPEG, and PNG all work; each becomes a
+     page in the output PDF.
 2. Pick a **scan style**, adjust **resolution** / **quality** (defaults are good).
 3. Tap **Scan & Shrink** (or **Make PDF** for images) and watch the live page preview.
 4. Tap **Save to Files** and pick the folder you want to keep it in.

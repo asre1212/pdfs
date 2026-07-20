@@ -65,10 +65,12 @@
       resultLabel: 'Scanned',
     },
     images: {
-      accept: 'image/*',
+      // image/* makes iOS Safari offer "Photo Library" (the Photos app); the
+      // explicit extensions make sure HEIC/JPEG/PNG are always selectable.
+      accept: 'image/*,.heic,.heif,.jpg,.jpeg,.png',
       multiple: true,
-      dzTitle: 'Choose images',
-      dzSub: 'Pick one or more photos — each becomes a page',
+      dzTitle: 'Choose photos',
+      dzSub: 'Pick from Photos or Files (HEIC, JPEG, PNG) — each becomes a page',
       runLabel: 'Make PDF',
       resultLabel: 'PDF',
     },
@@ -381,19 +383,28 @@
     pageOut.drawImage(embedded, { x: 0, y: 0, width: pwPts, height: phPts });
   }
 
-  // Decode an image file to something drawable. Prefer createImageBitmap
-  // (fast, off-main-thread); fall back to <img> + object URL (Safari HEIC).
+  // Decode an image file (HEIC/JPEG/PNG) to something drawable.
+  // Prefer createImageBitmap with EXIF orientation applied — iPhone photos are
+  // commonly stored rotated, and without this they'd come out sideways. Fall
+  // back to <img> (Safari decodes HEIC there; canvas draw honors orientation).
   async function loadImage(file) {
     if ('createImageBitmap' in window) {
-      try { return await createImageBitmap(file); } catch (_) { /* fall through */ }
+      try {
+        return await createImageBitmap(file, { imageOrientation: 'from-image' });
+      } catch (_) {
+        // Older engines may reject the options form — retry without it.
+        try { return await createImageBitmap(file); } catch (_2) { /* fall through */ }
+      }
     }
     const url = URL.createObjectURL(file);
     try {
       const img = await new Promise((resolve, reject) => {
         const im = new Image();
-        im.onload = () => resolve(im);
-        im.onerror = () => reject(new Error(`Could not decode "${file.name}".`));
         im.decoding = 'async';
+        // Honor EXIF orientation when the image is drawn onto a canvas.
+        try { im.style.imageOrientation = 'from-image'; } catch (_) {}
+        im.onload = () => resolve(im);
+        im.onerror = () => reject(new Error(`Couldn't open "${file.name}" — this image format isn't supported on this device.`));
         im.src = url;
       });
       img._objectUrl = url;
