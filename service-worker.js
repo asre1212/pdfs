@@ -1,6 +1,11 @@
 /* Offline cache so the app works with no connection after first load.
- * Bump CACHE version when any asset changes. */
-const CACHE = 'scanshrink-v1';
+ * BUILD is stamped by the GitHub Pages deploy workflow (see
+ * .github/workflows/deploy.yml). Each deploy produces a new cache name, so a
+ * new version fully replaces the old cached assets. When serving from a plain
+ * branch deploy (no Actions), the placeholder stays as-is and acts as a stable
+ * version string — bump it by hand if you change assets without the workflow. */
+const BUILD = '__BUILD_VERSION__';
+const CACHE = 'scanshrink-' + BUILD;
 const ASSETS = [
   './',
   './index.html',
@@ -17,7 +22,14 @@ const ASSETS = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));
+  // Pre-cache the new version's assets, but wait to activate until the app
+  // tells us to (via SKIP_WAITING) so updates apply cleanly.
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)));
+});
+
+// The page asks the freshly-installed worker to take over immediately.
+self.addEventListener('message', (e) => {
+  if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting();
 });
 
 self.addEventListener('activate', (e) => {

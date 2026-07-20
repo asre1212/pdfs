@@ -26,13 +26,23 @@
     </header>
 
     <main>
+      <!-- Update banner (shown when a new version is deployed) -->
+      <div class="update-banner hidden" id="updateBanner">
+        <span>🔄 A new version of ScanShrink is available.</span>
+        <button class="btn small" id="updateBtn">Refresh</button>
+      </div>
+
       <!-- Step 1: pick a file -->
       <section class="card" id="pickCard">
+        <div class="segmented two" id="sourceSeg">
+          <button data-source="pdf" class="seg active">Shrink a PDF</button>
+          <button data-source="images" class="seg">Images → PDF</button>
+        </div>
         <label class="dropzone" id="dropzone">
           <input type="file" id="fileInput" accept="application/pdf,.pdf" />
           <span class="dz-icon">⬆️</span>
-          <span class="dz-title">Choose a PDF</span>
-          <span class="dz-sub">Tap to pick from the Files app</span>
+          <span class="dz-title" id="dzTitle">Choose a PDF</span>
+          <span class="dz-sub" id="dzSub">Tap to pick from the Files app</span>
         </label>
         <p class="privacy">🔒 Nothing is uploaded. All processing happens locally in Safari.</p>
       </section>
