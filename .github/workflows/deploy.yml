@@ -1,0 +1,58 @@
+name: Deploy to GitHub Pages
+
+# Deploys the static app to GitHub Pages on every push to the default branch.
+# Before deploying it stamps a unique build version into service-worker.js and
+# version.json. Because the service worker file changes on every deploy, the
+# browser detects the new version and the app auto-updates installed PWAs.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Allow the workflow to publish to GitHub Pages.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; let a newer push supersede an in-progress run.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Stamp build version
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_SHA::7}.$(date -u +%Y%m%d%H%M%S)"
+          BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # Give the service worker a unique cache name so a new deploy fully
+          # replaces the previously cached assets.
+          sed -i "s/__BUILD_VERSION__/${VERSION}/g" service-worker.js
+          printf '{ "version": "%s", "commit": "%s", "builtAt": "%s" }\n' \
+            "$VERSION" "$GITHUB_SHA" "$BUILT_AT" > version.json
+          # Serve every file as-is (don't run Jekyll on GitHub Pages).
+          touch .nojekyll
+          echo "Stamped build version: ${VERSION}"
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -13,12 +13,15 @@
 
   // ---- state ----
   const state = {
-    file: null,
+    source: 'pdf',   // 'pdf' | 'images'
+    file: null,      // the picked PDF (source === 'pdf')
+    images: [],      // the picked image files (source === 'images')
     mode: 'bw',      // 'bw' | 'gray' | 'color'
     dpi: 150,
     quality: 0.65,
     resultUrl: null,
     outName: 'scanned.pdf',
+    busy: false,     // true while processing (used to defer auto-update)
   };
 
   // ---- element refs ----
@@ -26,6 +29,8 @@
   const els = {
     fileInput: $('fileInput'),
     pickCard: $('pickCard'),
+    sourceSeg: $('sourceSeg'),
+    dzTitle: $('dzTitle'), dzSub: $('dzSub'),
     optionsCard: $('optionsCard'),
     progressCard: $('progressCard'),
     resultCard: $('resultCard'),
@@ -40,6 +45,7 @@
     preview: $('preview'),
     stats: $('stats'), saveBtn: $('saveBtn'), anotherBtn: $('anotherBtn'),
     err: $('err'),
+    updateBanner: $('updateBanner'), updateBtn: $('updateBtn'),
   };
 
   const MODE_HINTS = {
@@ -47,6 +53,29 @@
     gray: 'Neutral grayscale — good for documents with light shading or pencil.',
     color: 'Keeps color but brightens the background — best for receipts, forms with color.',
   };
+
+  // Per-source UI config (file picker + button labels).
+  const SOURCE_UI = {
+    pdf: {
+      accept: 'application/pdf,.pdf',
+      multiple: false,
+      dzTitle: 'Choose a PDF',
+      dzSub: 'Tap to pick from the Files app',
+      runLabel: 'Scan & Shrink',
+      resultLabel: 'Scanned',
+    },
+    images: {
+      accept: 'image/*',
+      multiple: true,
+      dzTitle: 'Choose images',
+      dzSub: 'Pick one or more photos — each becomes a page',
+      runLabel: 'Make PDF',
+      resultLabel: 'PDF',
+    },
+  };
+
+  // Reference long-edge for image pages: 11in (792pt), like a standard page.
+  const IMG_PAGE_LONG_EDGE_PT = 792;
 
   // ---- helpers ----
   const fmtBytes = (b) => {
@@ -63,26 +92,78 @@
   const hide = (el) => el.classList.add('hidden');
   const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
 
+  // ---- source selection (PDF vs Images) ----
+  els.sourceSeg.addEventListener('click', (e) => {
+    const btn = e.target.closest('.seg');
+    if (!btn) return;
+    setSource(btn.dataset.source);
+  });
+
+  function setSource(source) {
+    if (!SOURCE_UI[source]) return;
+    state.source = source;
+    const ui = SOURCE_UI[source];
+    [...els.sourceSeg.children].forEach((b) => b.classList.toggle('active', b.dataset.source === source));
+    els.fileInput.setAttribute('accept', ui.accept);
+    if (ui.multiple) els.fileInput.setAttribute('multiple', '');
+    else els.fileInput.removeAttribute('multiple');
+    els.dzTitle.textContent = ui.dzTitle;
+    els.dzSub.textContent = ui.dzSub;
+    els.runBtn.textContent = ui.runLabel;
+    els.fileInput.value = '';
+    clearErr();
+  }
+
   // ---- file selection ----
   els.fileInput.addEventListener('change', (e) => {
-    const f = e.target.files && e.target.files[0];
+    const files = e.target.files ? [...e.target.files] : [];
+    if (!files.length) return;
+    clearErr();
+    if (state.source === 'images') selectImages(files);
+    else selectPdf(files[0]);
+  });
+
+  function selectPdf(f) {
     if (!f) return;
     if (f.type && f.type !== 'application/pdf' && !/\.pdf$/i.test(f.name)) {
       showErr('Please choose a PDF file.');
       return;
     }
-    clearErr();
     state.file = f;
+    state.images = [];
     const base = f.name.replace(/\.pdf$/i, '');
     state.outName = `${base} (scanned).pdf`;
     els.filemeta.innerHTML =
       `<span style="font-size:20px">📄</span>` +
       `<div style="min-width:0"><div class="fm-name">${escapeHtml(f.name)}</div>` +
       `<div class="fm-size">${fmtBytes(f.size)}</div></div>`;
+    goToOptions();
+  }
+
+  function selectImages(files) {
+    const imgs = files.filter((f) => (f.type && f.type.startsWith('image/')) || /\.(png|jpe?g|gif|bmp|webp|heic|heif|tiff?)$/i.test(f.name));
+    if (!imgs.length) {
+      showErr('Please choose one or more image files.');
+      return;
+    }
+    state.images = imgs;
+    state.file = null;
+    const totalSize = imgs.reduce((s, f) => s + f.size, 0);
+    const base = imgs.length === 1 ? imgs[0].name.replace(/\.[^.]+$/, '') : 'Scanned';
+    state.outName = `${base}.pdf`;
+    const label = imgs.length === 1 ? escapeHtml(imgs[0].name) : `${imgs.length} images`;
+    els.filemeta.innerHTML =
+      `<span style="font-size:20px">🖼️</span>` +
+      `<div style="min-width:0"><div class="fm-name">${label}</div>` +
+      `<div class="fm-size">${fmtBytes(totalSize)}</div></div>`;
+    goToOptions();
+  }
+
+  function goToOptions() {
     hide(els.pickCard);
     show(els.optionsCard);
     hide(els.resultCard);
-  });
+  }
 
   function escapeHtml(s) {
     return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -111,9 +192,13 @@
   els.resetBtn.addEventListener('click', resetToStart);
   els.anotherBtn.addEventListener('click', resetToStart);
 
+  // Quality slider only applies to JPEG (gray/color); hide it for the B&W default.
+  els.qualityOpt.style.display = state.mode === 'bw' ? 'none' : '';
+
   function resetToStart() {
     if (state.resultUrl) { URL.revokeObjectURL(state.resultUrl); state.resultUrl = null; }
     state.file = null;
+    state.images = [];
     els.fileInput.value = '';
     clearErr();
     hide(els.optionsCard);
@@ -126,21 +211,27 @@
   els.runBtn.addEventListener('click', run);
 
   async function run() {
-    if (!state.file) return;
+    const isImages = state.source === 'images';
+    if (isImages ? !state.images.length : !state.file) return;
     clearErr();
     hide(els.optionsCard);
     show(els.progressCard);
     els.progFill.style.width = '0%';
-    els.progTitle.textContent = 'Opening PDF…';
+    els.progTitle.textContent = isImages ? 'Preparing images…' : 'Opening PDF…';
     els.progSub.textContent = '';
+    state.busy = true;
+
+    const onProgress = (done, total, note) => {
+      const pct = total ? Math.round((done / total) * 100) : 0;
+      els.progFill.style.width = pct + '%';
+      els.progTitle.textContent = isImages ? 'Building PDF…' : 'Scanning & shrinking…';
+      els.progSub.textContent = note || `Page ${done} of ${total}`;
+    };
 
     try {
-      const out = await processPdf(state.file, state, (done, total, note) => {
-        const pct = total ? Math.round((done / total) * 100) : 0;
-        els.progFill.style.width = pct + '%';
-        els.progTitle.textContent = 'Scanning & shrinking…';
-        els.progSub.textContent = note || `Page ${done} of ${total}`;
-      });
+      const out = isImages
+        ? await processImages(state.images, state, onProgress)
+        : await processPdf(state.file, state, onProgress);
 
       if (state.resultUrl) URL.revokeObjectURL(state.resultUrl);
       const blob = new Blob([out.bytes], { type: 'application/pdf' });
@@ -149,13 +240,21 @@
       els.saveBtn.href = state.resultUrl;
       els.saveBtn.setAttribute('download', state.outName);
 
-      const orig = state.file.size;
+      const orig = isImages
+        ? state.images.reduce((s, f) => s + f.size, 0)
+        : state.file.size;
       const now = out.bytes.byteLength;
-      const pctSmaller = orig > 0 ? Math.max(0, Math.round((1 - now / orig) * 100)) : 0;
-      els.stats.innerHTML =
-        statTile(fmtBytes(orig), 'Original') +
-        statTile(fmtBytes(now), 'Scanned') +
-        statTile(pctSmaller + '%', 'Smaller', now <= orig);
+      const origLabel = isImages ? 'Images' : 'Original';
+      const resultLabel = SOURCE_UI[state.source].resultLabel;
+      const pctSmaller = orig > 0 ? Math.round((1 - now / orig) * 100) : 0;
+      const stats =
+        statTile(fmtBytes(orig), origLabel) +
+        statTile(fmtBytes(now), resultLabel);
+      // Only show a "smaller" tile when it's a meaningful shrink (PDFs always;
+      // images may grow, so show the delta only when it actually shrank).
+      els.stats.innerHTML = (pctSmaller > 0)
+        ? stats + statTile(pctSmaller + '%', 'Smaller', true)
+        : stats + statTile(`${out.pages} ${out.pages === 1 ? 'page' : 'pages'}`, 'Pages');
 
       hide(els.progressCard);
       show(els.resultCard);
@@ -163,7 +262,10 @@
       console.error(err);
       hide(els.progressCard);
       show(els.optionsCard);
-      showErr('Could not process this PDF: ' + (err && err.message ? err.message : err));
+      showErr('Could not process this ' + (isImages ? 'image set' : 'PDF') + ': ' + (err && err.message ? err.message : err));
+    } finally {
+      state.busy = false;
+      maybeApplyPendingUpdate();
     }
   }
 
@@ -201,25 +303,8 @@
       await page.render({ canvasContext: renderCtx, viewport, background: '#ffffff' }).promise;
       page.cleanup();
 
-      // apply the scanned-look filter in place
-      applyFilter(renderCtx, renderCanvas.width, renderCanvas.height, opts.mode);
-
-      // show a live preview
-      drawPreview(renderCanvas);
-
-      // encode + embed
-      let embedded;
-      if (opts.mode === 'bw') {
-        const blob = await canvasToBlob(renderCanvas, 'image/png');
-        embedded = await outDoc.embedPng(await blob.arrayBuffer());
-      } else {
-        const blob = await canvasToBlob(renderCanvas, 'image/jpeg', opts.quality);
-        embedded = await outDoc.embedJpg(await blob.arrayBuffer());
-      }
-
-      const pw = ptView.width, ph = ptView.height;
-      const pageOut = outDoc.addPage([pw, ph]);
-      pageOut.drawImage(embedded, { x: 0, y: 0, width: pw, height: ph });
+      // filter → preview → encode → embed → add page (keeps original page size)
+      await embedCanvasAsPage(outDoc, renderCanvas, renderCtx, ptView.width, ptView.height, opts);
 
       onProgress(i, total, `Compressed page ${i} of ${total}`);
       await nextFrame();
@@ -228,7 +313,101 @@
     onProgress(total, total, 'Finalizing PDF…');
     const bytes = await outDoc.save({ useObjectStreams: true });
     try { await pdf.destroy(); } catch (_) {}
-    return { bytes };
+    return { bytes, pages: total };
+  }
+
+  // ---- images -> PDF (same scanned-look filter + shrink) ----
+  async function processImages(files, opts, onProgress) {
+    const total = files.length;
+    const outDoc = await PDFLib.PDFDocument.create();
+
+    const renderCanvas = document.createElement('canvas');
+    const renderCtx = renderCanvas.getContext('2d', { willReadFrequently: true });
+
+    for (let i = 0; i < total; i++) {
+      onProgress(i, total, `Rendering image ${i + 1} of ${total}…`);
+      await nextFrame();
+
+      const bitmap = await loadImage(files[i]);
+      const natW = bitmap.naturalWidth || bitmap.width;
+      const natH = bitmap.naturalHeight || bitmap.height;
+      if (!natW || !natH) { closeBitmap(bitmap); throw new Error(`Could not read image "${files[i].name}".`); }
+
+      // Page size in points: fixed long edge (like a standard page), image aspect.
+      const long = IMG_PAGE_LONG_EDGE_PT;
+      const short = Math.round(long * (Math.min(natW, natH) / Math.max(natW, natH)));
+      const pwPts = natW >= natH ? long : short;
+      const phPts = natW >= natH ? short : long;
+
+      // Raster size for the chosen DPI, but never upsample beyond the source.
+      const scale = opts.dpi / 72;
+      const targetW = Math.max(1, Math.min(natW, Math.round(pwPts * scale)));
+      const targetH = Math.max(1, Math.min(natH, Math.round(phPts * scale)));
+
+      renderCanvas.width = targetW;
+      renderCanvas.height = targetH;
+      renderCtx.fillStyle = '#ffffff';
+      renderCtx.fillRect(0, 0, targetW, targetH);
+      renderCtx.drawImage(bitmap, 0, 0, targetW, targetH);
+      closeBitmap(bitmap);
+
+      await embedCanvasAsPage(outDoc, renderCanvas, renderCtx, pwPts, phPts, opts);
+
+      onProgress(i + 1, total, `Added page ${i + 1} of ${total}`);
+      await nextFrame();
+    }
+
+    onProgress(total, total, 'Finalizing PDF…');
+    const bytes = await outDoc.save({ useObjectStreams: true });
+    return { bytes, pages: total };
+  }
+
+  // Shared: apply the scanned-look filter to the canvas, preview it, encode,
+  // embed into `outDoc`, and add a page of the given point size.
+  async function embedCanvasAsPage(outDoc, canvas, ctx, pwPts, phPts, opts) {
+    applyFilter(ctx, canvas.width, canvas.height, opts.mode);
+    drawPreview(canvas);
+
+    let embedded;
+    if (opts.mode === 'bw') {
+      const blob = await canvasToBlob(canvas, 'image/png');
+      embedded = await outDoc.embedPng(await blob.arrayBuffer());
+    } else {
+      const blob = await canvasToBlob(canvas, 'image/jpeg', opts.quality);
+      embedded = await outDoc.embedJpg(await blob.arrayBuffer());
+    }
+
+    const pageOut = outDoc.addPage([pwPts, phPts]);
+    pageOut.drawImage(embedded, { x: 0, y: 0, width: pwPts, height: phPts });
+  }
+
+  // Decode an image file to something drawable. Prefer createImageBitmap
+  // (fast, off-main-thread); fall back to <img> + object URL (Safari HEIC).
+  async function loadImage(file) {
+    if ('createImageBitmap' in window) {
+      try { return await createImageBitmap(file); } catch (_) { /* fall through */ }
+    }
+    const url = URL.createObjectURL(file);
+    try {
+      const img = await new Promise((resolve, reject) => {
+        const im = new Image();
+        im.onload = () => resolve(im);
+        im.onerror = () => reject(new Error(`Could not decode "${file.name}".`));
+        im.decoding = 'async';
+        im.src = url;
+      });
+      img._objectUrl = url;
+      return img;
+    } catch (err) {
+      URL.revokeObjectURL(url);
+      throw err;
+    }
+  }
+
+  function closeBitmap(bitmap) {
+    if (!bitmap) return;
+    if (typeof bitmap.close === 'function') bitmap.close();
+    if (bitmap._objectUrl) { URL.revokeObjectURL(bitmap._objectUrl); bitmap._objectUrl = null; }
   }
 
   function canvasToBlob(canvas, type, quality) {
@@ -340,10 +519,83 @@
     }
   }
 
-  // ---- register service worker for offline use ----
+  // ---- service worker: offline cache + auto-update ----
+  // When a new version is deployed to GitHub, the browser re-fetches the
+  // service worker, installs it in the background, and we surface it here.
+  let swRegistration = null;
+  let pendingWorker = null;      // a new, installed worker waiting to activate
+  let reloadingForUpdate = false;
+
+  // True only when nothing is in flight and nothing would be lost on reload.
+  function isIdleAtStart() {
+    return !state.busy && !state.file && !state.images.length &&
+      els.resultCard.classList.contains('hidden') &&
+      els.progressCard.classList.contains('hidden');
+  }
+
+  function showUpdateBanner() {
+    if (els.updateBanner) show(els.updateBanner);
+  }
+
+  function applyUpdate() {
+    const worker = pendingWorker || (swRegistration && swRegistration.waiting);
+    if (!worker) return;
+    reloadingForUpdate = true;
+    // Ask the waiting worker to take over; controllerchange then reloads us.
+    worker.postMessage({ type: 'SKIP_WAITING' });
+  }
+
+  // Called when the app becomes idle again, to seamlessly apply a pending update.
+  function maybeApplyPendingUpdate() {
+    if (pendingWorker && isIdleAtStart()) applyUpdate();
+  }
+
+  function onUpdateAvailable(worker) {
+    pendingWorker = worker;
+    showUpdateBanner();
+    // If the user isn't in the middle of anything, update seamlessly now.
+    if (isIdleAtStart()) applyUpdate();
+  }
+
+  function watchInstallingWorker(worker) {
+    if (!worker) return;
+    worker.addEventListener('statechange', () => {
+      // A freshly installed worker while one already controls the page = update.
+      if (worker.state === 'installed' && navigator.serviceWorker.controller) {
+        onUpdateAvailable(worker);
+      }
+    });
+  }
+
   if ('serviceWorker' in navigator) {
+    if (els.updateBtn) els.updateBtn.addEventListener('click', applyUpdate);
+
+    // Reload once the new worker has taken control.
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (reloadingForUpdate) window.location.reload();
+    });
+
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('service-worker.js').catch(() => {});
+      navigator.serviceWorker.register('service-worker.js', { updateViaCache: 'none' })
+        .then((reg) => {
+          swRegistration = reg;
+          // A new version may already be waiting from a previous visit.
+          if (reg.waiting && navigator.serviceWorker.controller) onUpdateAvailable(reg.waiting);
+          watchInstallingWorker(reg.installing);
+          reg.addEventListener('updatefound', () => watchInstallingWorker(reg.installing));
+
+          // Proactively check for a new deploy now and periodically.
+          reg.update().catch(() => {});
+          setInterval(() => reg.update().catch(() => {}), 30 * 60 * 1000);
+        })
+        .catch(() => {});
+    });
+
+    // Check for updates whenever the app comes back to the foreground.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && swRegistration) {
+        swRegistration.update().catch(() => {});
+      }
     });
   }
 })();
