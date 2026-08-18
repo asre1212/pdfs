@@ -74,6 +74,7 @@
     stats: $('stats'), saveBtn: $('saveBtn'), anotherBtn: $('anotherBtn'),
     err: $('err'),
     updateBanner: $('updateBanner'), updateBtn: $('updateBtn'),
+    verLabel: $('verLabel'), checkUpdateBtn: $('checkUpdateBtn'),
     // redaction editor
     dropzone: $('dropzone'),
     redactCard: $('redactCard'), redactMeta: $('redactMeta'),
@@ -1079,6 +1080,101 @@
     return { bytes, pages: total, redactions: totalRedactions() };
   }
 
+  // ---- version line + manual update check ----
+  // The running build comes from the service worker itself (it holds the
+  // version it was deployed with); version.json is what the *server* has, so
+  // the two together tell us whether a newer build is out there.
+  const DEV_VERSIONS = ['dev', 'local', '__BUILD_VERSION__', ''];
+
+  function formatVersion(v) {
+    if (!v || DEV_VERSIONS.indexOf(v) !== -1) return 'Development build';
+    // The deploy workflow stamps "<short-sha>.<YYYYMMDDHHMMSS>".
+    const [sha, stamp] = String(v).split('.');
+    const m = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})/.exec(stamp || '');
+    if (!m) return 'Version ' + sha;
+    const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]));
+    if (isNaN(d)) return 'Version ' + sha;
+    const when = d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+    return `Version ${sha} · ${when}`;
+  }
+
+  // Ask the worker controlling this page which build it is.
+  function askWorkerVersion() {
+    const worker = navigator.serviceWorker && navigator.serviceWorker.controller;
+    if (!worker) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      const ch = new MessageChannel();
+      const done = setTimeout(() => resolve(null), 1500);
+      ch.port1.onmessage = (e) => {
+        clearTimeout(done);
+        resolve((e.data && e.data.version) || null);
+      };
+      try { worker.postMessage({ type: 'GET_VERSION' }, [ch.port2]); }
+      catch (_) { clearTimeout(done); resolve(null); }
+    });
+  }
+
+  // Falls back to version.json when no worker controls the page yet (first
+  // visit), which is the build this page was just served from anyway.
+  async function currentVersion() {
+    const fromWorker = await askWorkerVersion();
+    if (fromWorker) return fromWorker;
+    try {
+      const res = await fetch('version.json', { cache: 'no-store' });
+      if (res.ok) return (await res.json()).version || null;
+    } catch (_) {}
+    return null;
+  }
+
+  async function showVersion() {
+    els.verLabel.textContent = formatVersion(await currentVersion());
+  }
+
+  const CHECK_LABELS = {
+    idle: 'Check for updates',
+    checking: 'Checking…',
+    found: 'Update found — installing…',
+    current: '✓ Up to date',
+    offline: 'Offline — can’t check',
+    error: 'Check failed — try again',
+  };
+  let checkResetTimer = null;
+
+  function setCheckState(name) {
+    clearTimeout(checkResetTimer);
+    els.checkUpdateBtn.textContent = CHECK_LABELS[name];
+    els.checkUpdateBtn.disabled = name !== 'idle' && name !== 'error';
+    // Transient outcomes fall back to the normal label so the button stays usable.
+    if (name === 'current' || name === 'offline' || name === 'error') {
+      checkResetTimer = setTimeout(() => setCheckState('idle'), 4000);
+    }
+  }
+
+  async function checkForUpdates() {
+    if (!('serviceWorker' in navigator)) return;
+    if (pendingWorker) { onUpdateAvailable(pendingWorker); return; }
+    if (navigator.onLine === false) { setCheckState('offline'); return; }
+    setCheckState('checking');
+    try {
+      const reg = swRegistration || await navigator.serviceWorker.ready;
+      swRegistration = reg;
+      // Re-fetches the worker script; a changed script starts installing.
+      await reg.update();
+      if (reg.waiting && navigator.serviceWorker.controller) {
+        setCheckState('found');
+        onUpdateAvailable(reg.waiting);
+      } else if (reg.installing) {
+        // watchInstallingWorker() surfaces it as soon as it is installed.
+        setCheckState('found');
+      } else {
+        await showVersion();
+        setCheckState('current');
+      }
+    } catch (_) {
+      setCheckState('error');
+    }
+  }
+
   // ---- service worker: offline cache + auto-update ----
   // When a new version is deployed to GitHub, the browser re-fetches the
   // service worker, installs it in the background, and we surface it here.
@@ -1113,6 +1209,7 @@
   function onUpdateAvailable(worker) {
     pendingWorker = worker;
     showUpdateBanner();
+    setCheckState('found');
     // If the user isn't in the middle of anything, update seamlessly now.
     if (isIdleAtStart()) applyUpdate();
   }
@@ -1127,12 +1224,18 @@
     });
   }
 
+  showVersion();
+
   if ('serviceWorker' in navigator) {
     if (els.updateBtn) els.updateBtn.addEventListener('click', applyUpdate);
+    show(els.checkUpdateBtn);
+    els.checkUpdateBtn.addEventListener('click', checkForUpdates);
 
-    // Reload once the new worker has taken control.
+    // Reload once the new worker has taken control; if it took over without
+    // us asking, at least re-read the version it reports.
     navigator.serviceWorker.addEventListener('controllerchange', () => {
       if (reloadingForUpdate) window.location.reload();
+      else showVersion();
     });
 
     window.addEventListener('load', () => {
@@ -1147,8 +1250,14 @@
           // Proactively check for a new deploy now and periodically.
           reg.update().catch(() => {});
           setInterval(() => reg.update().catch(() => {}), 30 * 60 * 1000);
+          showVersion();
         })
         .catch(() => {});
+    });
+
+    // Coming back online is the moment a missed deploy becomes reachable.
+    window.addEventListener('online', () => {
+      if (swRegistration) swRegistration.update().catch(() => {});
     });
 
     // Check for updates whenever the app comes back to the foreground.
