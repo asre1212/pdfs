@@ -107,6 +107,10 @@ main { flex: 1; }
   background: var(--bg2); padding: 5px; border-radius: 12px;
 }
 .segmented.two { grid-template-columns: repeat(2, 1fr); margin-top: 0; margin-bottom: 14px; }
+.segmented.two.inline { margin-top: 10px; margin-bottom: 0; }
+/* Top-level source picker: three cells, so keep the labels compact. */
+.segmented.top { margin-top: 0; margin-bottom: 14px; }
+.segmented.top .seg { font-size: 13px; padding: 9px 4px; }
 .seg {
   border: none; background: transparent; color: var(--muted);
   padding: 9px 6px; border-radius: 9px; font-size: 14px; font-weight: 600;
@@ -138,6 +142,9 @@ input[type=range]::-webkit-slider-thumb {
 .btn.primary { background: var(--accent); color: #fff; }
 .btn.primary:active { background: var(--accent2); }
 .btn.ghost { background: var(--card2); color: var(--text); border: 1px solid var(--line); }
+.btn.danger { background: #c0392f; color: #fff; }
+.btn.danger:active { background: #a12f26; }
+.btn.done { background: var(--card2); color: var(--good); border: 1px solid var(--line); }
 .btn.block { display: flex; width: 100%; margin-top: 10px; }
 .btn.small { flex: 0 0 auto; padding: 8px 14px; font-size: 13.5px; }
 .btn[disabled] { opacity: .5; pointer-events: none; }
@@ -195,3 +202,54 @@ input[type=range]::-webkit-slider-thumb {
 }
 .foot .dot { opacity: .5; }
 .badge { color: var(--good); }
+
+/* ---- Redaction editor ---- */
+.pager { display: flex; align-items: center; gap: 10px; margin: 6px 0 12px; }
+.pager .btn { flex: 0 0 auto; width: 46px; padding: 10px 0; font-size: 20px; line-height: 1; }
+.pager-info { flex: 1; min-width: 0; text-align: center; }
+.pager-page { font-size: 14px; font-weight: 600; }
+.pager-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+.stage {
+  position: relative;
+  width: 100%;
+  min-height: 120px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  overflow: hidden;
+  /* Drawing a box must not scroll or zoom the page under the finger. */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: crosshair;
+}
+.page-canvas { display: block; width: 100%; height: auto; }
+.boxes { position: absolute; inset: 0; }
+.rbox {
+  position: absolute;
+  background: #000;
+  outline: 1px solid var(--danger);
+  outline-offset: -1px;
+}
+.rbox.draft { background: rgba(0, 0, 0, .6); outline-style: dashed; }
+.rbox-del {
+  /* Centred on the box's right edge: text-line boxes are only a few pixels
+     tall, so a corner-anchored handle would sit half outside them. */
+  position: absolute; top: 50%; right: 2px; transform: translateY(-50%);
+  width: 20px; height: 20px; padding: 0;
+  border: none; border-radius: 50%;
+  background: var(--danger); color: #2a0a0f;
+  font-size: 12px; font-weight: 800; line-height: 1;
+  display: grid; place-items: center; cursor: pointer;
+  box-shadow: 0 1px 4px #0008;
+}
+.stage-loading {
+  position: absolute; inset: 0;
+  display: grid; place-items: center;
+  background: #ffffffd9;
+}
+.stage-loading.hidden { display: none !important; }
+
+.tools { display: flex; gap: 8px; margin-top: 10px; }
+.tools .btn { padding: 9px 8px; font-size: 13px; }

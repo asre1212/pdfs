@@ -1,7 +1,7 @@
 {
   "name": "ScanShrink — PDF Scanner",
   "short_name": "ScanShrink",
-  "description": "Turn a photo-PDF into a small, scanned-looking PDF — entirely on your phone. No uploads.",
+  "description": "Shrink photo-PDFs, turn photos into PDFs, and permanently redact PDFs — entirely on your phone. No uploads.",
   "start_url": ".",
   "scope": ".",
   "display": "standalone",
