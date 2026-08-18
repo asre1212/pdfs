@@ -227,6 +227,16 @@ input[type=range]::-moz-range-thumb {
 .foot .dot { opacity: .5; }
 .badge { color: var(--good); }
 
+/* Version + manual update check */
+.verbar {
+  display: flex; align-items: center; justify-content: center;
+  flex-wrap: wrap; gap: 10px;
+  padding: 10px 4px 0;
+  color: var(--muted); font-size: 12px;
+}
+.verbar .ver { font-variant-numeric: tabular-nums; }
+.verbar .btn { padding: 7px 12px; font-size: 12.5px; font-weight: 600; }
+
 /* ---- Redaction editor ---- */
 .pager { display: flex; align-items: center; gap: 10px; margin: 4px 0 12px; }
 .pager .btn { flex: 0 0 auto; width: 44px; padding: 9px 0; font-size: 19px; line-height: 1; color: var(--muted); }

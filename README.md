@@ -32,8 +32,9 @@ airplane mode on after the first load.
 - 🔒 **100% local & private** — no servers, no tracking, no network calls while processing.
 - 📴 **Works offline** — installable to your Home Screen; runs without a connection.
 - 🔄 **Auto-updates** — when you push a new version to GitHub, installed copies of
-  the app pick it up automatically (see below). Only app code updates over the
-  network; **your documents and images are still never uploaded.**
+  the app pick it up automatically, and a **Check for updates** button plus the
+  running version sit at the bottom of the screen (see below). Only app code
+  updates over the network; **your documents and images are still never uploaded.**
 
 ---
 
@@ -57,12 +58,23 @@ You don't need a Mac or Xcode — just this repo and free GitHub Pages hosting.
 
 ### 🔄 How auto-update works
 
-Each deploy stamps a fresh version into `service-worker.js`, so the browser
-notices the change, installs the new version in the background, and the app
-swaps itself over — no reinstall needed. If you're in the middle of scanning, a
-small **"A new version is available — Refresh"** banner appears so nothing is
-interrupted; otherwise the update applies silently. This only ever downloads the
-app's own code; **no document or image ever leaves your device.**
+Each deploy stamps a fresh version into `service-worker.js` and `version.json`,
+so the browser notices the change, installs the new version in the background,
+and the app swaps itself over — no reinstall needed.
+
+- **It checks on its own** when the app starts, whenever it comes back to the
+  foreground, when the device comes back online, and every 30 minutes while open.
+- **It never interrupts you.** If you're idle the update applies silently. If
+  you're in the middle of scanning or redacting, a small **"A new version is
+  available — Refresh"** banner appears instead, and the update is applied the
+  moment you finish (or when you tap Refresh).
+- **You can check yourself.** The bottom of the screen shows which build you're
+  running — e.g. *Version a1b2c3d · 18 Aug 2026* — next to a **Check for updates**
+  button that reports back: *✓ Up to date*, *Update found — installing…*, or
+  *Offline — can't check*.
+
+This only ever downloads the app's own code; **no document or image ever leaves
+your device.**
 
 ## 📱 Install on your iPhone
 
