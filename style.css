@@ -120,6 +120,7 @@ main { flex: 1; }
 }
 .segmented.two { grid-template-columns: repeat(2, 1fr); margin-top: 0; margin-bottom: 14px; }
 .segmented.two.inline { margin-top: 10px; margin-bottom: 0; }
+.segmented.two.inline.modeswitch { margin: 0 0 10px; }
 /* Top-level source picker: three cells, so keep the labels compact. */
 .segmented.top { margin-top: 0; margin-bottom: 14px; }
 .segmented.top .seg { font-size: 13px; padding: 9px 4px; }
@@ -244,21 +245,31 @@ input[type=range]::-moz-range-thumb {
 .pager-page { font-size: 14px; font-weight: 650; }
 .pager-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
 
-/* The stage hugs the rendered page exactly, so the redaction overlay
-   (inset: 0) always lines up with the canvas at any page shape. */
-.stage-wrap { display: flex; justify-content: center; }
-.stage {
+/* The wrapper is the fixed frame the page is viewed through; the stage
+   inside it hugs the rendered page exactly and carries the zoom/pan
+   transform, so the redaction overlay (inset: 0) always lines up with the
+   canvas at any page shape and any zoom level. */
+.stage-wrap {
   position: relative;
-  max-width: 100%;
+  display: flex;
+  justify-content: center;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: #fff;
   overflow: hidden;
-  /* Drawing a box must not scroll or zoom the page under the finger. */
+  /* Drawing and panning must not scroll or zoom the page under the finger. */
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;
-  cursor: crosshair;
+}
+.stage-wrap.mode-redact { cursor: crosshair; }
+.stage-wrap.mode-move { cursor: grab; }
+.stage-wrap.mode-move.panning { cursor: grabbing; }
+.stage {
+  position: relative;
+  max-width: 100%;
+  transform-origin: 0 0;
+  will-change: transform;
 }
 /* Fits the card's width and stays short enough that the page and the tools
    below it are visible together. Keep the cap in sync with STAGE_MAX_VH. */
@@ -267,6 +278,8 @@ input[type=range]::-moz-range-thumb {
 .rbox {
   position: absolute;
   background: #000;
+  /* Browsers clamp outlines to a whole pixel, so this thickens with the zoom
+     — which is fine: it keeps the marked area obvious when you are in close. */
   outline: 1px solid var(--danger);
   outline-offset: -1px;
 }
@@ -274,7 +287,10 @@ input[type=range]::-moz-range-thumb {
 .rbox-del {
   /* Centred on the box's right edge: text-line boxes are only a few pixels
      tall, so a corner-anchored handle would sit half outside them. */
-  position: absolute; top: 50%; right: 2px; transform: translateY(-50%);
+  position: absolute; top: 50%; right: 2px;
+  /* Divide out the zoom so the handle stays finger-sized, never balloons. */
+  transform: translateY(-50%) scale(var(--zoom-inv, 1));
+  transform-origin: 100% 50%;
   width: 20px; height: 20px; padding: 0;
   border: none; border-radius: 50%;
   background: var(--danger); color: #fff;
@@ -288,6 +304,16 @@ input[type=range]::-moz-range-thumb {
   background: #ffffffd9;
 }
 .stage-loading.hidden { display: none !important; }
+
+/* Zoom readout / reset, floating over the page while zoomed in. */
+.zoomchip {
+  position: absolute; top: 8px; right: 8px; z-index: 2;
+  padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 999px;
+  background: #ffffffe6; color: var(--text);
+  font-size: 12px; font-weight: 650; cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+}
 
 .tools { display: flex; gap: 8px; margin-top: 10px; }
 .tools .btn { padding: 9px 8px; font-size: 13px; }

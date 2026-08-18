@@ -105,6 +105,12 @@ Tap **Redact PDF**, choose a file, and you get a page-by-page editor:
   boxes as you like, on as many pages as you like.
 - Tap a box's **✕** to remove it; **Undo**, **Clear page** and **Clear all** are there
   for bigger changes. Use **‹ ›** to move between pages.
+- **Redact / Move & zoom** switches what one finger does. In **Redact** it draws a
+  box; in **Move & zoom** it drags the page around. **Two fingers pinch to zoom in
+  either mode**, and a **double-tap** in Move mode zooms in and back out. While
+  you're zoomed in, a **Fit** chip in the corner shows the zoom and returns the page
+  to full view. Zooming re-renders the page at the new size, so you can get right
+  in on fine print and place a box exactly — it doesn't just magnify a blurry image.
 - **Pages to flatten** — *Redacted pages* (default) turns only the pages you marked
   into images and copies every other page through untouched, so their text stays
   selectable. *Every page* flattens the whole document, which also drops every
@@ -183,7 +189,7 @@ scripts/gen-icons.js  # regenerates the icons (node scripts/gen-icons.js)
 - Output not small enough? Lower **quality** (Grayscale/Color) or drop to **B&W**.
 - Very large PDFs (50+ high-res pages) take longer and use more memory — give it a moment.
 - Redacting? Draw boxes a little larger than the text — descenders and italics like to
-  poke out — and zoom the page in Safari if you need to be precise.
+  poke out — and pinch to zoom in when you need to be precise.
 
 ## 📄 License
 
