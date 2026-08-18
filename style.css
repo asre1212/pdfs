@@ -305,15 +305,29 @@ input[type=range]::-moz-range-thumb {
 }
 .stage-loading.hidden { display: none !important; }
 
-/* Zoom readout / reset, floating over the page while zoomed in. */
-.zoomchip {
+/* Zoom controls, floating over the page. Always available, so zooming never
+   depends on a gesture the device might not deliver. */
+.zoomctl {
   position: absolute; top: 8px; right: 8px; z-index: 2;
-  padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 999px;
-  background: #ffffffe6; color: var(--text);
-  font-size: 12px; font-weight: 650; cursor: pointer;
+  display: flex; align-items: stretch;
+  border: 1px solid var(--line-strong); border-radius: 999px;
+  background: #ffffffe6; overflow: hidden;
   box-shadow: var(--shadow-sm);
   -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
 }
+.zoomctl button {
+  border: none; background: transparent; color: var(--text);
+  font-size: 13px; font-weight: 650; cursor: pointer;
+  padding: 7px 10px; line-height: 1;
+}
+.zoomctl .zbtn { font-size: 17px; min-width: 38px; }
+.zoomctl .zbtn:active, .zoomchip:active { background: var(--track); }
+.zoomchip {
+  min-width: 58px; font-variant-numeric: tabular-nums;
+  border-left: 1px solid var(--line) !important;
+  border-right: 1px solid var(--line) !important;
+}
+.zoomctl button[disabled] { opacity: .35; pointer-events: none; }
 
 .tools { display: flex; gap: 8px; margin-top: 10px; }
 .tools .btn { padding: 9px 8px; font-size: 13px; }

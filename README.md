@@ -107,10 +107,11 @@ Tap **Redact PDF**, choose a file, and you get a page-by-page editor:
   for bigger changes. Use **‹ ›** to move between pages.
 - **Redact / Move & zoom** switches what one finger does. In **Redact** it draws a
   box; in **Move & zoom** it drags the page around. **Two fingers pinch to zoom in
-  either mode**, and a **double-tap** in Move mode zooms in and back out. While
-  you're zoomed in, a **Fit** chip in the corner shows the zoom and returns the page
-  to full view. Zooming re-renders the page at the new size, so you can get right
-  in on fine print and place a box exactly — it doesn't just magnify a blurry image.
+  either mode**, and a **double-tap** in Move mode zooms in and back out. There are
+  also **− / + buttons** in the corner of the page with the current zoom between
+  them; tap the percentage to snap back to a full-page view. Zooming re-renders the
+  page at the new size, so you can get right in on fine print and place a box
+  exactly — it doesn't just magnify a blurry image.
 - **Pages to flatten** — *Redacted pages* (default) turns only the pages you marked
   into images and copies every other page through untouched, so their text stays
   selectable. *Every page* flattens the whole document, which also drops every

@@ -83,7 +83,8 @@
     pageLabel: $('pageLabel'), boxLabel: $('boxLabel'),
     stageWrap: $('stageWrap'), stage: $('stage'),
     pageCanvas: $('pageCanvas'), boxLayer: $('boxLayer'),
-    editModeSeg: $('editModeSeg'), editHint: $('editHint'), zoomChip: $('zoomChip'),
+    editModeSeg: $('editModeSeg'), editHint: $('editHint'),
+    zoomChip: $('zoomChip'), zoomInBtn: $('zoomInBtn'), zoomOutBtn: $('zoomOutBtn'),
     stageLoading: $('stageLoading'),
     undoBtn: $('undoBtn'), clearPageBtn: $('clearPageBtn'), clearAllBtn: $('clearAllBtn'),
     flattenSeg: $('flattenSeg'), flattenHint: $('flattenHint'),
@@ -926,8 +927,11 @@
       : clamp(view.ty, L.wrapH - h - L.top0, -L.top0);
     els.stage.style.transform = `translate(${view.tx}px, ${view.ty}px) scale(${view.scale})`;
     els.stage.style.setProperty('--zoom-inv', String(1 / view.scale));
-    els.zoomChip.textContent = Math.round(view.scale * 100) + '% · Fit';
-    els.zoomChip.classList.toggle('hidden', view.scale <= 1.001);
+    const atFit = view.scale <= 1.001;
+    els.zoomChip.textContent = atFit ? '100%' : Math.round(view.scale * 100) + '%';
+    els.zoomChip.disabled = atFit;                 // nothing to fit back to
+    els.zoomOutBtn.disabled = atFit;
+    els.zoomInBtn.disabled = view.scale >= MAX_SCALE - 0.001;
   }
 
   function resetView() { view.scale = 1; view.tx = 0; view.ty = 0; applyView(); }
@@ -966,6 +970,17 @@
     };
   }
 
+  // Buttons zoom about the middle of the frame, a step at a time. These work
+  // on every device, whatever it does or doesn't do with gestures.
+  function frameCentre() {
+    return { x: els.stageWrap.clientWidth / 2, y: els.stageWrap.clientHeight / 2 };
+  }
+  function zoomStep(factor) {
+    zoomAt(frameCentre(), view.scale * factor);
+    scheduleQualityRender();
+  }
+  els.zoomInBtn.addEventListener('click', () => zoomStep(1.5));
+  els.zoomOutBtn.addEventListener('click', () => zoomStep(1 / 1.5));
   els.zoomChip.addEventListener('click', () => { resetView(); scheduleQualityRender(); });
 
   // --- gestures (pointer events cover mouse, pen and touch) ---
@@ -1032,11 +1047,116 @@
     applyView();
   }
 
+  // iOS Safari — especially a standalone Home Screen app — does not deliver
+  // usable multi-touch through Pointer Events: the second finger never
+  // arrives, so a pinch was being read as a one-finger drag and drew a box.
+  // Touch Events do report every finger, so on touch devices we drive the
+  // gestures from those and let the pointer stream handle mouse and pen only.
+  const HAS_TOUCH = ('ontouchstart' in window) || (navigator.maxTouchPoints || 0) > 0;
+
+  // Safari's own pinch gesture would fight ours; refuse it over the page.
+  ['gesturestart', 'gesturechange', 'gestureend'].forEach((type) => {
+    els.stageWrap.addEventListener(type, (e) => e.preventDefault(), { passive: false });
+  });
+
+  // Every live touch that started anywhere inside the frame. Deliberately not
+  // targetTouches: that only reports touches sharing the event's target, so a
+  // finger landing on a redaction box and another on the canvas would not be
+  // seen as the same gesture.
+  function wrapTouches(e) {
+    const list = [];
+    for (const t of e.touches) if (els.stageWrap.contains(t.target)) list.push(t);
+    return list;
+  }
+
+  // Mirror the live touches into the shared pointer map, in frame coordinates.
+  function syncTouches(list) {
+    pointers.clear();
+    for (const t of list) pointers.set(t.identifier, framePoint(t));
+  }
+
+  // The zoom buttons are real buttons: never swallow their taps.
+  const onControls = (e) => !!(e.target.closest && e.target.closest('.zoomctl'));
+
+  function removeBoxFrom(el) {
+    boxesFor(state.pageNum).splice(parseInt(el.dataset.index, 10), 1);
+    renderBoxes();
+  }
+
+  els.stageWrap.addEventListener('touchstart', (e) => {
+    if (!state.pdfDoc || onControls(e)) return;
+    const del = e.target.closest('.rbox-del');
+    if (del) { e.preventDefault(); removeBoxFrom(del); return; }
+    e.preventDefault();
+    const ts = wrapTouches(e);
+    syncTouches(ts);
+
+    if (pointers.size >= 2) {
+      // A second finger turns whatever was happening into a pinch — including
+      // the box the first finger had just started drawing.
+      cancelDraft();
+      pan = null;
+      els.stageWrap.classList.remove('panning');
+      startPinch();
+      return;
+    }
+    const t = ts[0];
+    if (!t) return;
+    if (state.editMode === 'redact') startDraft(stagePoint(t));
+    else {
+      pan = { p: framePoint(t), tx: view.tx, ty: view.ty, at: Date.now() };
+      els.stageWrap.classList.add('panning');
+    }
+  }, { passive: false });
+
+  els.stageWrap.addEventListener('touchmove', (e) => {
+    if (!state.pdfDoc || onControls(e)) return;
+    e.preventDefault();
+    const ts = wrapTouches(e);
+    syncTouches(ts);
+    if (pinch) { updatePinch(); return; }
+    const t = ts[0];
+    if (!t) return;
+    if (draft) { sizeDraft(stagePoint(t)); return; }
+    if (pan) {
+      const p = framePoint(t);
+      view.tx = pan.tx + (p.x - pan.p.x);
+      view.ty = pan.ty + (p.y - pan.p.y);
+      applyView();
+    }
+  }, { passive: false });
+
+  const endTouch = (e) => {
+    if (!state.pdfDoc || onControls(e)) return;
+    const lifted = e.changedTouches[0];
+    syncTouches(wrapTouches(e));   // e.touches already excludes the lifted one
+    if (pinch) {
+      if (pointers.size < 2) { pinch = null; scheduleQualityRender(); }
+      return;
+    }
+    if (draft) { commitDraft(stagePoint(lifted)); return; }
+    if (pan) {
+      const p = framePoint(lifted);
+      const tap = Math.hypot(p.x - pan.p.x, p.y - pan.p.y) < 10 && Date.now() - pan.at < 300;
+      pan = null;
+      els.stageWrap.classList.remove('panning');
+      if (tap) {
+        const now = Date.now();
+        if (now - lastTapAt < 320) { lastTapAt = 0; zoomAt(p, view.scale > 1.001 ? MIN_SCALE : 2.5); }
+        else lastTapAt = now;
+      }
+      scheduleQualityRender();
+    }
+  };
+  els.stageWrap.addEventListener('touchend', endTouch, { passive: false });
+  els.stageWrap.addEventListener('touchcancel', endTouch, { passive: false });
+
   els.stageWrap.addEventListener('pointerdown', (e) => {
     if (!state.pdfDoc || e.button > 0) return;
-    // The zoom chip is a real button: leave it alone, or capturing the
-    // pointer here would retarget its click to the frame and swallow it.
-    if (e.target.closest('.zoomchip')) return;
+    if (HAS_TOUCH && e.pointerType === 'touch') return;   // handled above
+    // The zoom controls are real buttons: leave them alone, or capturing the
+    // pointer here would retarget their clicks to the frame and swallow them.
+    if (onControls(e)) return;
     // Tapping a box's ✕ removes it, in either mode.
     const del = e.target.closest('.rbox-del');
     if (del) {
@@ -1068,6 +1188,7 @@
   });
 
   els.stageWrap.addEventListener('pointermove', (e) => {
+    if (HAS_TOUCH && e.pointerType === 'touch') return;
     if (!pointers.has(e.pointerId)) return;
     pointers.set(e.pointerId, framePoint(e));
     if (pinch) { e.preventDefault(); updatePinch(); return; }
@@ -1082,6 +1203,7 @@
   });
 
   const endPointer = (e) => {
+    if (HAS_TOUCH && e.pointerType === 'touch') return;
     if (!pointers.delete(e.pointerId)) return;
     try { els.stageWrap.releasePointerCapture(e.pointerId); } catch (_) {}
     if (pinch) {
@@ -1117,7 +1239,9 @@
     if (!state.pdfDoc) return;
     if (e.ctrlKey) {
       e.preventDefault();
-      zoomAt(framePoint(e), view.scale * Math.exp(-e.deltaY / 100));
+      // Trackpad pinches arrive as many small deltas; a mouse wheel sends one
+      // huge one. Cap the per-event step so a single notch is a step, not a leap.
+      zoomAt(framePoint(e), view.scale * Math.exp(-clamp(e.deltaY, -50, 50) / 100));
       scheduleQualityRender();
       return;
     }
