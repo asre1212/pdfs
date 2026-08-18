@@ -1,6 +1,8 @@
-/* ScanShrink — local, in-browser PDF "scanner" + shrinker.
+/* ScanShrink — local, in-browser PDF "scanner", shrinker + redactor.
  * Renders each PDF page, applies a scanned-document filter, downsamples,
- * and rebuilds a compressed PDF. No network, no uploads. */
+ * and rebuilds a compressed PDF. Redaction re-renders marked pages as flat
+ * images with the boxes burned in, so covered content is destroyed rather
+ * than hidden. No network, no uploads. */
 
 (() => {
   'use strict';
@@ -13,16 +15,42 @@
 
   // ---- state ----
   const state = {
-    source: 'pdf',   // 'pdf' | 'images'
-    file: null,      // the picked PDF (source === 'pdf')
+    source: 'pdf',   // 'pdf' | 'images' | 'redact'
+    file: null,      // the picked PDF (source === 'pdf' | 'redact')
+    fileHandle: null,// FileSystemFileHandle when the picker gave us one
     images: [],      // the picked image files (source === 'images')
     mode: 'bw',      // 'bw' | 'gray' | 'color'
     dpi: 150,
     quality: 0.65,
     resultUrl: null,
+    resultBlob: null,
     outName: 'scanned.pdf',
     busy: false,     // true while processing (used to defer auto-update)
+    // redaction editor
+    pdfDoc: null,        // pdf.js document open in the editor
+    pageCount: 0,
+    pageNum: 1,
+    redactions: {},      // pageNum -> [{x,y,w,h}] in 0..1 of the rendered page
+    flatten: 'marked',   // 'marked' | 'all'
+    nameMode: 'suffix',  // 'suffix' | 'same' — name of the redacted output
+    rDpi: 200,
   };
+
+  // Render annotations *and* filled form values onto the canvas, so what the
+  // editor shows is exactly what gets flattened — anything visible can be
+  // redacted, and nothing invisible sneaks into the output.
+  const ANNOT_MODE = (window['pdfjsLib'] && pdfjsLib.AnnotationMode)
+    ? pdfjsLib.AnnotationMode.ENABLE_STORAGE : undefined;
+
+  // JPEG quality for redacted (flattened) pages — high enough that a page
+  // stays comfortably readable, low enough to keep the file sane.
+  const REDACT_QUALITY = 0.85;
+
+  // File System Access API: lets us write the result straight back over the
+  // file the user picked. Safari/iOS doesn't have it — there we fall back to
+  // the download link, which is what "Save to Files" uses.
+  const canOpenWithHandle = typeof window.showOpenFilePicker === 'function';
+  const canSaveWithPicker = typeof window.showSaveFilePicker === 'function';
 
   // ---- element refs ----
   const $ = (id) => document.getElementById(id);
@@ -46,6 +74,22 @@
     stats: $('stats'), saveBtn: $('saveBtn'), anotherBtn: $('anotherBtn'),
     err: $('err'),
     updateBanner: $('updateBanner'), updateBtn: $('updateBtn'),
+    // redaction editor
+    dropzone: $('dropzone'),
+    redactCard: $('redactCard'), redactMeta: $('redactMeta'),
+    prevPageBtn: $('prevPageBtn'), nextPageBtn: $('nextPageBtn'),
+    pageLabel: $('pageLabel'), boxLabel: $('boxLabel'),
+    stageWrap: $('stageWrap'), stage: $('stage'),
+    pageCanvas: $('pageCanvas'), boxLayer: $('boxLayer'),
+    stageLoading: $('stageLoading'),
+    undoBtn: $('undoBtn'), clearPageBtn: $('clearPageBtn'), clearAllBtn: $('clearAllBtn'),
+    flattenSeg: $('flattenSeg'), flattenHint: $('flattenHint'),
+    nameSeg: $('nameSeg'), nameHint: $('nameHint'),
+    rdpi: $('rdpi'), rdpiVal: $('rdpiVal'),
+    redactRunBtn: $('redactRunBtn'), redactCancelBtn: $('redactCancelBtn'),
+    // result destinations
+    resultIcon: $('resultIcon'), resultTitle: $('resultTitle'),
+    replaceBtn: $('replaceBtn'), saveAsBtn: $('saveAsBtn'), saveHint: $('saveHint'),
   };
 
   const MODE_HINTS = {
@@ -74,6 +118,26 @@
       runLabel: 'Make PDF',
       resultLabel: 'PDF',
     },
+    redact: {
+      accept: 'application/pdf,.pdf',
+      multiple: false,
+      dzTitle: 'Choose a PDF to redact',
+      dzSub: 'Tap to pick from the Files app',
+      runLabel: 'Redact PDF',
+      resultLabel: 'Redacted',
+    },
+  };
+
+  const NAME_HINTS = {
+    suffix: 'Saves next to the original as <b>Name (redacted).pdf</b>.',
+    // On iOS the Files "Save to" sheet offers to replace a file of the same
+    // name, which is as close to saving in place as Safari can get.
+    same: 'Keeps the original file name, so saving into the original folder replaces the file there.',
+  };
+
+  const FLATTEN_HINTS = {
+    marked: 'Redacted pages are flattened to images; untouched pages are copied through unchanged so their text stays selectable.',
+    all: 'Every page is re-rendered as a flat image. Nothing selectable, no hidden layers, no document metadata — the most thorough option.',
   };
 
   // Reference long-edge for image pages: 11in (792pt), like a standard page.
@@ -94,7 +158,7 @@
   const hide = (el) => el.classList.add('hidden');
   const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
 
-  // ---- source selection (PDF vs Images) ----
+  // ---- source selection (shrink PDF / images / redact PDF) ----
   els.sourceSeg.addEventListener('click', (e) => {
     const btn = e.target.closest('.seg');
     if (!btn) return;
@@ -112,8 +176,35 @@
     els.dzTitle.textContent = ui.dzTitle;
     els.dzSub.textContent = ui.dzSub;
     els.runBtn.textContent = ui.runLabel;
-    els.fileInput.value = '';
-    clearErr();
+    // Switching source drops whatever was picked and returns to step 1.
+    resetToStart();
+  }
+
+  // Where the File System Access API exists (desktop Safari, Chrome, Edge) pick
+  // the PDF through it instead of the <input>: it hands back a handle we can
+  // later write straight back over, so the redacted file replaces the original
+  // in place. iOS Safari has no such API and keeps using the <input>.
+  els.dropzone.addEventListener('click', (e) => {
+    if (!canOpenWithHandle || state.source === 'images') return;
+    e.preventDefault();
+    openPdfWithHandle();
+  });
+
+  async function openPdfWithHandle() {
+    try {
+      const [handle] = await window.showOpenFilePicker({
+        multiple: false,
+        types: [{ description: 'PDF document', accept: { 'application/pdf': ['.pdf'] } }],
+      });
+      if (!handle) return;
+      const f = await handle.getFile();
+      clearErr();
+      state.fileHandle = handle;
+      selectPdf(f);
+    } catch (err) {
+      if (err && (err.name === 'AbortError' || err.name === 'NotAllowedError')) return;
+      showErr('Could not open that file: ' + (err && err.message ? err.message : err));
+    }
   }
 
   // ---- file selection ----
@@ -121,6 +212,7 @@
     const files = e.target.files ? [...e.target.files] : [];
     if (!files.length) return;
     clearErr();
+    state.fileHandle = null; // came from the plain picker — no writable handle
     if (state.source === 'images') selectImages(files);
     else selectPdf(files[0]);
   });
@@ -134,12 +226,19 @@
     state.file = f;
     state.images = [];
     const base = f.name.replace(/\.pdf$/i, '');
-    state.outName = `${base} (scanned).pdf`;
-    els.filemeta.innerHTML =
-      `<span style="font-size:20px">📄</span>` +
-      `<div style="min-width:0"><div class="fm-name">${escapeHtml(f.name)}</div>` +
-      `<div class="fm-size">${fmtBytes(f.size)}</div></div>`;
-    goToOptions();
+    const isRedact = state.source === 'redact';
+    state.outName = `${base} (${isRedact ? 'redacted' : 'scanned'}).pdf`;
+    const meta = metaHtml('📄', f.name, fmtBytes(f.size));
+    els.filemeta.innerHTML = meta;
+    els.redactMeta.innerHTML = meta;
+    if (isRedact) { updateRedactName(); openRedactor(); }
+    else goToOptions();
+  }
+
+  function metaHtml(icon, name, sub) {
+    return `<span style="font-size:20px">${icon}</span>` +
+      `<div style="min-width:0"><div class="fm-name">${escapeHtml(name)}</div>` +
+      `<div class="fm-size">${escapeHtml(sub)}</div></div>`;
   }
 
   function selectImages(files) {
@@ -153,11 +252,8 @@
     const totalSize = imgs.reduce((s, f) => s + f.size, 0);
     const base = imgs.length === 1 ? imgs[0].name.replace(/\.[^.]+$/, '') : 'Scanned';
     state.outName = `${base}.pdf`;
-    const label = imgs.length === 1 ? escapeHtml(imgs[0].name) : `${imgs.length} images`;
-    els.filemeta.innerHTML =
-      `<span style="font-size:20px">🖼️</span>` +
-      `<div style="min-width:0"><div class="fm-name">${label}</div>` +
-      `<div class="fm-size">${fmtBytes(totalSize)}</div></div>`;
+    const label = imgs.length === 1 ? imgs[0].name : `${imgs.length} images`;
+    els.filemeta.innerHTML = metaHtml('🖼️', label, fmtBytes(totalSize));
     goToOptions();
   }
 
@@ -199,9 +295,12 @@
 
   function resetToStart() {
     if (state.resultUrl) { URL.revokeObjectURL(state.resultUrl); state.resultUrl = null; }
+    state.resultBlob = null;
     state.file = null;
+    state.fileHandle = null;
     state.images = [];
     els.fileInput.value = '';
+    closeRedactor();
     clearErr();
     hide(els.optionsCard);
     hide(els.progressCard);
@@ -214,29 +313,39 @@
 
   async function run() {
     const isImages = state.source === 'images';
+    const isRedact = state.source === 'redact';
     if (isImages ? !state.images.length : !state.file) return;
+    if (isRedact && state.flatten !== 'all' && !totalRedactions()) {
+      showErr('Draw a box over what you want removed first — or switch “Pages to flatten” to “Every page”.');
+      return;
+    }
     clearErr();
     hide(els.optionsCard);
+    hide(els.redactCard);
     show(els.progressCard);
     els.progFill.style.width = '0%';
     els.progTitle.textContent = isImages ? 'Preparing images…' : 'Opening PDF…';
     els.progSub.textContent = '';
     state.busy = true;
 
+    const runTitle = isRedact ? 'Redacting…' : isImages ? 'Building PDF…' : 'Scanning & shrinking…';
     const onProgress = (done, total, note) => {
       const pct = total ? Math.round((done / total) * 100) : 0;
       els.progFill.style.width = pct + '%';
-      els.progTitle.textContent = isImages ? 'Building PDF…' : 'Scanning & shrinking…';
+      els.progTitle.textContent = runTitle;
       els.progSub.textContent = note || `Page ${done} of ${total}`;
     };
 
     try {
       const out = isImages
         ? await processImages(state.images, state, onProgress)
-        : await processPdf(state.file, state, onProgress);
+        : isRedact
+          ? await processRedactions(state, onProgress)
+          : await processPdf(state.file, state, onProgress);
 
       if (state.resultUrl) URL.revokeObjectURL(state.resultUrl);
       const blob = new Blob([out.bytes], { type: 'application/pdf' });
+      state.resultBlob = blob;
       state.resultUrl = URL.createObjectURL(blob);
 
       els.saveBtn.href = state.resultUrl;
@@ -245,31 +354,132 @@
       const orig = isImages
         ? state.images.reduce((s, f) => s + f.size, 0)
         : state.file.size;
-      const now = out.bytes.byteLength;
-      const origLabel = isImages ? 'Images' : 'Original';
-      const resultLabel = SOURCE_UI[state.source].resultLabel;
-      const pctSmaller = orig > 0 ? Math.round((1 - now / orig) * 100) : 0;
-      const stats =
-        statTile(fmtBytes(orig), origLabel) +
-        statTile(fmtBytes(now), resultLabel);
-      // Only show a "smaller" tile when it's a meaningful shrink (PDFs always;
-      // images may grow, so show the delta only when it actually shrank).
-      els.stats.innerHTML = (pctSmaller > 0)
-        ? stats + statTile(pctSmaller + '%', 'Smaller', true)
-        : stats + statTile(`${out.pages} ${out.pages === 1 ? 'page' : 'pages'}`, 'Pages');
+      showResult(out, orig, isImages, isRedact);
 
       hide(els.progressCard);
       show(els.resultCard);
     } catch (err) {
       console.error(err);
       hide(els.progressCard);
-      show(els.optionsCard);
-      showErr('Could not process this ' + (isImages ? 'image set' : 'PDF') + ': ' + (err && err.message ? err.message : err));
+      show(isRedact ? els.redactCard : els.optionsCard);
+      const what = isImages ? 'image set' : isRedact ? 'redaction' : 'PDF';
+      showErr('Could not process this ' + what + ': ' + (err && err.message ? err.message : err));
     } finally {
       state.busy = false;
       maybeApplyPendingUpdate();
     }
   }
+
+  // Fill in the result card: stats, wording, and the available save targets.
+  function showResult(out, orig, isImages, isRedact) {
+    const now = out.bytes.byteLength;
+    const pctSmaller = orig > 0 ? Math.round((1 - now / orig) * 100) : 0;
+    const resultLabel = SOURCE_UI[state.source].resultLabel;
+
+    if (isRedact) {
+      const n = out.redactions;
+      els.stats.innerHTML =
+        statTile(fmtBytes(orig), 'Original') +
+        statTile(fmtBytes(now), 'Redacted') +
+        statTile(String(n), n === 1 ? 'Area removed' : 'Areas removed', true);
+    } else {
+      const stats =
+        statTile(fmtBytes(orig), isImages ? 'Images' : 'Original') +
+        statTile(fmtBytes(now), resultLabel);
+      // Only show a "smaller" tile when it's a meaningful shrink (PDFs always;
+      // images may grow, so show the delta only when it actually shrank).
+      els.stats.innerHTML = (pctSmaller > 0)
+        ? stats + statTile(pctSmaller + '%', 'Smaller', true)
+        : stats + statTile(`${out.pages} ${out.pages === 1 ? 'page' : 'pages'}`, 'Pages');
+    }
+
+    els.resultIcon.textContent = isRedact ? '🛡️' : '✅';
+    els.resultTitle.textContent = isRedact ? 'Redacted for good' : 'Done!';
+    els.anotherBtn.textContent = isRedact
+      ? 'Redact another PDF'
+      : isImages ? 'Make another PDF' : 'Scan another PDF';
+
+    // Save destinations. "Replace the original" needs a writable handle, which
+    // only the File System Access API gives us; iOS keeps the download link.
+    const canReplace = !!(state.fileHandle && typeof state.fileHandle.createWritable === 'function');
+    resetSaveBtn(els.replaceBtn, 'Replace the original file', 'danger');
+    resetSaveBtn(els.saveAsBtn, state.fileHandle ? 'Save to the original folder…' : 'Save a copy…', 'ghost');
+    els.replaceBtn.classList.toggle('hidden', !canReplace);
+    els.saveAsBtn.classList.toggle('hidden', !canSaveWithPicker);
+    // "Save to Files" is the iOS wording; where a real save dialog exists the
+    // plain download link is just a copy.
+    els.saveBtn.textContent = canSaveWithPicker ? 'Download a copy' : 'Save to Files';
+
+    els.saveHint.innerHTML = canReplace
+      ? `<b>Replace the original file</b> writes the ${isRedact ? 'redacted' : 'new'} PDF straight back over ` +
+        `“${escapeHtml(state.fileHandle.name)}” — same folder, same name. Prefer a copy? Use one of the options below it.`
+      : 'Tap <b>Save to Files</b>, then pick the same folder your original is in to keep them together.';
+  }
+
+  function resetSaveBtn(btn, label, cls) {
+    btn.textContent = label;
+    btn.disabled = false;
+    btn.className = `btn ${cls} block`;
+  }
+
+  // ---- saving back to the file the user picked ----
+  async function writeToHandle(handle, blob) {
+    if (typeof handle.requestPermission === 'function') {
+      const perm = await handle.requestPermission({ mode: 'readwrite' });
+      if (perm !== 'granted') throw new Error('Permission to write that file was denied.');
+    }
+    const writable = await handle.createWritable();
+    try {
+      await writable.write(blob);
+      await writable.close();
+    } catch (err) {
+      try { await writable.abort(); } catch (_) {}
+      throw err;
+    }
+  }
+
+  els.replaceBtn.addEventListener('click', async () => {
+    const handle = state.fileHandle;
+    if (!handle || !state.resultBlob) return;
+    const warning = state.source === 'redact'
+      ? `Replace “${handle.name}” with the redacted version?\n\nThe original is overwritten in place and the redacted content cannot be recovered.`
+      : `Replace “${handle.name}” with the new version?\n\nThe original is overwritten in place.`;
+    if (!window.confirm(warning)) return;
+    clearErr();
+    els.replaceBtn.disabled = true;
+    try {
+      await writeToHandle(handle, state.resultBlob);
+      els.replaceBtn.textContent = '✅ Saved over the original';
+      els.replaceBtn.className = 'btn done block';
+      els.saveHint.textContent = `“${handle.name}” now holds the ${state.source === 'redact' ? 'redacted' : 'processed'} version.`;
+    } catch (err) {
+      els.replaceBtn.disabled = false;
+      if (!(err && err.name === 'AbortError')) {
+        showErr('Could not write the file: ' + (err && err.message ? err.message : err));
+      }
+    }
+  });
+
+  els.saveAsBtn.addEventListener('click', async () => {
+    if (!state.resultBlob) return;
+    clearErr();
+    try {
+      const opts = {
+        suggestedName: state.outName,
+        types: [{ description: 'PDF document', accept: { 'application/pdf': ['.pdf'] } }],
+      };
+      // Opens the dialog in the original file's folder when we know it.
+      if (state.fileHandle) opts.startIn = state.fileHandle;
+      const handle = await window.showSaveFilePicker(opts);
+      await writeToHandle(handle, state.resultBlob);
+      els.saveAsBtn.textContent = `✅ Saved as ${handle.name}`;
+      els.saveAsBtn.className = 'btn done block';
+      els.saveAsBtn.disabled = true;
+    } catch (err) {
+      if (err && (err.name === 'AbortError' || err.name === 'NotAllowedError')) return;
+      showErr('Could not save the file: ' + (err && err.message ? err.message : err));
+    }
+  });
 
   function statTile(num, lab, good) {
     return `<div class="stat"><div class="s-num ${good ? 'good' : ''}">${num}</div><div class="s-lab">${lab}</div></div>`;
@@ -528,6 +738,345 @@
         gray[p] = (gray[p] * count < sum * t) ? 0 : 255;
       }
     }
+  }
+
+  // ---- redaction editor ----
+  // Boxes are stored per page in normalized coordinates (0..1) of the rendered
+  // page, so they survive re-rendering at any zoom, screen size or output DPI.
+  // Tallest the page preview is drawn — matches .page-canvas max-height in CSS.
+  const STAGE_MAX_VH = 0.64;
+  let editorToken = 0;   // guards against out-of-order page renders
+  let draft = null;      // { el, x0, y0 } while a box is being dragged
+
+  const boxesFor = (n) => (state.redactions[n] || (state.redactions[n] = []));
+  const totalRedactions = () =>
+    Object.keys(state.redactions).reduce((sum, k) => sum + state.redactions[k].length, 0);
+
+  async function openRedactor() {
+    hide(els.pickCard);
+    hide(els.optionsCard);
+    hide(els.resultCard);
+    show(els.redactCard);
+    show(els.stageLoading);
+    state.redactions = {};
+    state.pageNum = 1;
+
+    try {
+      const buf = await state.file.arrayBuffer();
+      state.pdfDoc = await pdfjsLib.getDocument({ data: new Uint8Array(buf), disableAutoFetch: true }).promise;
+      state.pageCount = state.pdfDoc.numPages;
+    } catch (err) {
+      console.error(err);
+      resetToStart();   // also tears the editor down
+      showErr('Could not open this PDF: ' + (err && err.message ? err.message : err));
+      return;
+    }
+    await gotoPage(1);
+  }
+
+  function closeRedactor() {
+    editorToken++;
+    if (state.pdfDoc) {
+      try { state.pdfDoc.destroy(); } catch (_) {}
+      state.pdfDoc = null;
+    }
+    state.pageCount = 0;
+    state.pageNum = 1;
+    state.redactions = {};
+    els.boxLayer.innerHTML = '';
+    draft = null;
+    hide(els.redactCard);
+  }
+
+  async function gotoPage(n) {
+    if (!state.pdfDoc) return;
+    state.pageNum = Math.min(Math.max(1, n), state.pageCount);
+    updateRedactLabels();
+    await renderEditorPage();
+  }
+
+  async function renderEditorPage() {
+    const pdf = state.pdfDoc;
+    if (!pdf) return;
+    const token = ++editorToken;
+    const pageNum = state.pageNum;
+    show(els.stageLoading);
+    els.boxLayer.innerHTML = '';
+
+    try {
+      const page = await pdf.getPage(pageNum);
+      const base = page.getViewport({ scale: 1 });
+      // Fit the card's width and the height cap, then render at device pixel
+      // density (capped) so the page is crisp without an oversized canvas.
+      const cssWidth = els.stageWrap.clientWidth || 320;
+      const fit = Math.min(cssWidth / base.width, (window.innerHeight * STAGE_MAX_VH) / base.height);
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const viewport = page.getViewport({ scale: Math.max(0.05, fit) * dpr });
+      if (token !== editorToken) { page.cleanup(); return; }
+
+      const canvas = els.pageCanvas;
+      canvas.width = Math.max(1, Math.floor(viewport.width));
+      canvas.height = Math.max(1, Math.floor(viewport.height));
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvasContext: ctx, viewport, background: '#ffffff', annotationMode: ANNOT_MODE }).promise;
+      page.cleanup();
+      if (token !== editorToken) return;
+    } catch (err) {
+      console.error(err);
+      showErr('Could not render page ' + pageNum + '.');
+    } finally {
+      if (token === editorToken) hide(els.stageLoading);
+    }
+    renderBoxes();
+  }
+
+  function renderBoxes() {
+    els.boxLayer.innerHTML = '';
+    boxesFor(state.pageNum).forEach((b, i) => {
+      const el = document.createElement('div');
+      el.className = 'rbox';
+      el.style.left = (b.x * 100) + '%';
+      el.style.top = (b.y * 100) + '%';
+      el.style.width = (b.w * 100) + '%';
+      el.style.height = (b.h * 100) + '%';
+      const del = document.createElement('button');
+      del.className = 'rbox-del';
+      del.type = 'button';
+      del.textContent = '✕';
+      del.setAttribute('aria-label', 'Remove this redaction');
+      del.dataset.index = String(i);
+      el.appendChild(del);
+      els.boxLayer.appendChild(el);
+    });
+    updateRedactLabels();
+  }
+
+  function updateRedactLabels() {
+    const here = boxesFor(state.pageNum).length;
+    const all = totalRedactions();
+    els.pageLabel.textContent = `Page ${state.pageNum} of ${state.pageCount || 1}`;
+    els.boxLabel.textContent = all === 0
+      ? 'Drag over anything you want removed'
+      : `${here} on this page · ${all} in total`;
+    els.prevPageBtn.disabled = state.pageNum <= 1;
+    els.nextPageBtn.disabled = state.pageNum >= state.pageCount;
+    els.undoBtn.disabled = here === 0;
+    els.clearPageBtn.disabled = here === 0;
+    els.clearAllBtn.disabled = all === 0;
+  }
+
+  // --- drawing boxes (pointer events cover mouse, pen and touch) ---
+  els.stage.addEventListener('pointerdown', (e) => {
+    if (!state.pdfDoc || e.button > 0) return;
+    // Tapping a box's ✕ removes it instead of starting a new box.
+    const del = e.target.closest('.rbox-del');
+    if (del) {
+      e.preventDefault();
+      boxesFor(state.pageNum).splice(parseInt(del.dataset.index, 10), 1);
+      renderBoxes();
+      return;
+    }
+    e.preventDefault();
+    const pt = stagePoint(e);
+    const el = document.createElement('div');
+    el.className = 'rbox draft';
+    els.boxLayer.appendChild(el);
+    draft = { el, x0: pt.x, y0: pt.y };
+    sizeDraft(pt);
+    try { els.stage.setPointerCapture(e.pointerId); } catch (_) {}
+  });
+
+  els.stage.addEventListener('pointermove', (e) => {
+    if (!draft) return;
+    e.preventDefault();
+    sizeDraft(stagePoint(e));
+  });
+
+  const endDraw = (e) => {
+    if (!draft) return;
+    const pt = stagePoint(e);
+    const rect = sizeDraft(pt);
+    draft.el.remove();
+    draft = null;
+    try { els.stage.releasePointerCapture(e.pointerId); } catch (_) {}
+    // Ignore stray taps: a box has to be big enough to mean something.
+    const minW = 6 / Math.max(1, els.stage.clientWidth);
+    const minH = 6 / Math.max(1, els.stage.clientHeight);
+    if (rect.w < minW || rect.h < minH) { renderBoxes(); return; }
+    boxesFor(state.pageNum).push(rect);
+    renderBoxes();
+    clearErr();
+  };
+  els.stage.addEventListener('pointerup', endDraw);
+  els.stage.addEventListener('pointercancel', endDraw);
+
+  function stagePoint(e) {
+    const r = els.stage.getBoundingClientRect();
+    const clamp = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
+    return {
+      x: clamp(r.width ? (e.clientX - r.left) / r.width : 0),
+      y: clamp(r.height ? (e.clientY - r.top) / r.height : 0),
+    };
+  }
+
+  function sizeDraft(pt) {
+    const rect = {
+      x: Math.min(draft.x0, pt.x),
+      y: Math.min(draft.y0, pt.y),
+      w: Math.abs(pt.x - draft.x0),
+      h: Math.abs(pt.y - draft.y0),
+    };
+    draft.el.style.left = (rect.x * 100) + '%';
+    draft.el.style.top = (rect.y * 100) + '%';
+    draft.el.style.width = (rect.w * 100) + '%';
+    draft.el.style.height = (rect.h * 100) + '%';
+    return rect;
+  }
+
+  // --- editor controls ---
+  els.prevPageBtn.addEventListener('click', () => gotoPage(state.pageNum - 1));
+  els.nextPageBtn.addEventListener('click', () => gotoPage(state.pageNum + 1));
+  els.undoBtn.addEventListener('click', () => { boxesFor(state.pageNum).pop(); renderBoxes(); });
+  els.clearPageBtn.addEventListener('click', () => { state.redactions[state.pageNum] = []; renderBoxes(); });
+  els.clearAllBtn.addEventListener('click', () => { state.redactions = {}; renderBoxes(); });
+  els.redactCancelBtn.addEventListener('click', resetToStart);
+  els.redactRunBtn.addEventListener('click', run);
+
+  els.flattenSeg.addEventListener('click', (e) => {
+    const btn = e.target.closest('.seg');
+    if (!btn) return;
+    state.flatten = btn.dataset.flatten;
+    [...els.flattenSeg.children].forEach((b) => b.classList.toggle('active', b === btn));
+    els.flattenHint.textContent = FLATTEN_HINTS[state.flatten];
+  });
+
+  els.nameSeg.addEventListener('click', (e) => {
+    const btn = e.target.closest('.seg');
+    if (!btn) return;
+    state.nameMode = btn.dataset.name;
+    [...els.nameSeg.children].forEach((b) => b.classList.toggle('active', b === btn));
+    els.nameHint.innerHTML = NAME_HINTS[state.nameMode];
+    updateRedactName();
+  });
+
+  // The redacted copy is either "Name (redacted).pdf" or the original name.
+  function updateRedactName() {
+    if (!state.file) return;
+    const base = state.file.name.replace(/\.pdf$/i, '');
+    state.outName = state.nameMode === 'same' ? state.file.name : `${base} (redacted).pdf`;
+  }
+
+  els.rdpi.addEventListener('input', () => {
+    state.rDpi = parseInt(els.rdpi.value, 10);
+    els.rdpiVal.textContent = state.rDpi + ' DPI';
+  });
+
+  // Re-render at the new width when the device rotates or the window resizes.
+  let resizeTimer = null;
+  window.addEventListener('resize', () => {
+    if (els.redactCard.classList.contains('hidden') || !state.pdfDoc) return;
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => renderEditorPage(), 150);
+  });
+
+  // ---- redaction output ----
+  // Marked pages are re-rendered to a canvas, the boxes are painted onto that
+  // canvas, and the result is embedded as a flat image. The text, vectors and
+  // images that were underneath never make it into the output file, so there
+  // is nothing left to select, copy or recover.
+  async function processRedactions(opts, onProgress) {
+    const pdf = opts.pdfDoc;
+    if (!pdf) throw new Error('the PDF is no longer open — pick it again');
+    const total = pdf.numPages;
+    const flattenAll = opts.flatten === 'all';
+    const outDoc = await PDFLib.PDFDocument.create();
+    const scale = opts.rDpi / 72;
+
+    // Pages nobody redacted can be carried over as-is (their text stays
+    // selectable and they keep full quality) — unless "Every page" is chosen.
+    const keep = [];
+    if (!flattenAll) {
+      for (let i = 1; i <= total; i++) if (!boxesFor(i).length) keep.push(i - 1);
+    }
+    const copiedPages = new Map();
+    if (keep.length) {
+      try {
+        // pdf.js takes ownership of the buffer we handed it, so re-read the file.
+        const srcBytes = new Uint8Array(await opts.file.arrayBuffer());
+        const srcDoc = await PDFLib.PDFDocument.load(srcBytes, { ignoreEncryption: true });
+        const pages = await outDoc.copyPages(srcDoc, keep);
+        keep.forEach((idx, k) => copiedPages.set(idx + 1, pages[k]));
+      } catch (err) {
+        // Can't reuse the original pages (encrypted, damaged, …) — flatten
+        // everything instead. Slightly bigger output, same redaction guarantee.
+        console.warn('Copying untouched pages failed; flattening them too.', err);
+        copiedPages.clear();
+      }
+    }
+
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+
+    for (let i = 1; i <= total; i++) {
+      const boxes = boxesFor(i);
+      const copied = copiedPages.get(i);
+      if (copied) {
+        onProgress(i - 1, total, `Keeping page ${i} of ${total}…`);
+        outDoc.addPage(copied);
+        onProgress(i, total, `Kept page ${i} of ${total}`);
+        await nextFrame();
+        continue;
+      }
+
+      onProgress(i - 1, total, `Redacting page ${i} of ${total}…`);
+      await nextFrame();
+
+      const page = await pdf.getPage(i);
+      const viewport = page.getViewport({ scale });
+      const ptView = page.getViewport({ scale: 1 }); // page size in PDF points
+
+      canvas.width = Math.max(1, Math.floor(viewport.width));
+      canvas.height = Math.max(1, Math.floor(viewport.height));
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvasContext: ctx, viewport, background: '#ffffff', annotationMode: ANNOT_MODE }).promise;
+      page.cleanup();
+
+      // Burn the boxes in — after this the covered pixels are simply black.
+      ctx.fillStyle = '#000000';
+      for (const b of boxes) {
+        ctx.fillRect(
+          Math.floor(b.x * canvas.width),
+          Math.floor(b.y * canvas.height),
+          Math.max(1, Math.ceil(b.w * canvas.width)),
+          Math.max(1, Math.ceil(b.h * canvas.height))
+        );
+      }
+      drawPreview(canvas);
+
+      const blob = await canvasToBlob(canvas, 'image/jpeg', REDACT_QUALITY);
+      const embedded = await outDoc.embedJpg(await blob.arrayBuffer());
+      const pageOut = outDoc.addPage([ptView.width, ptView.height]);
+      pageOut.drawImage(embedded, { x: 0, y: 0, width: ptView.width, height: ptView.height });
+
+      onProgress(i, total, `Redacted page ${i} of ${total}`);
+      await nextFrame();
+    }
+
+    // Start the output's metadata from scratch — the original's title, author
+    // and keywords can be revealing all by themselves.
+    outDoc.setTitle('');
+    outDoc.setAuthor('');
+    outDoc.setSubject('');
+    outDoc.setKeywords([]);
+    outDoc.setProducer('ScanShrink');
+    outDoc.setCreator('ScanShrink');
+
+    onProgress(total, total, 'Finalizing PDF…');
+    const bytes = await outDoc.save({ useObjectStreams: true });
+    return { bytes, pages: total, redactions: totalRedactions() };
   }
 
   // ---- service worker: offline cache + auto-update ----

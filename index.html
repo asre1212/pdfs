@@ -3,11 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
-  <meta name="theme-color" content="#0b1220" />
+  <meta name="theme-color" content="#f6f7f9" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="ScanShrink" />
-  <title>ScanShrink — PDF Scanner</title>
+  <title>ScanShrink — Scan &amp; Redact PDFs</title>
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="apple-touch-icon" href="icons/icon-180.png" />
   <link rel="icon" href="icons/icon-192.png" />
@@ -20,7 +20,7 @@
         <span class="logo">📄</span>
         <div>
           <h1>ScanShrink</h1>
-          <p class="tag">Turn a photo-PDF into a small scanned PDF — 100% on your phone</p>
+          <p class="tag">Shrink, build and redact PDFs — 100% on your phone</p>
         </div>
       </div>
     </header>
@@ -34,9 +34,10 @@
 
       <!-- Step 1: pick a file -->
       <section class="card" id="pickCard">
-        <div class="segmented two" id="sourceSeg">
-          <button data-source="pdf" class="seg active">Shrink a PDF</button>
+        <div class="segmented top" id="sourceSeg">
+          <button data-source="pdf" class="seg active">Shrink PDF</button>
           <button data-source="images" class="seg">Images → PDF</button>
+          <button data-source="redact" class="seg">Redact PDF</button>
         </div>
         <label class="dropzone" id="dropzone">
           <input type="file" id="fileInput" accept="application/pdf,.pdf" />
@@ -79,6 +80,64 @@
         </div>
       </section>
 
+      <!-- Step 2b: redaction editor (source = redact) -->
+      <section class="card hidden" id="redactCard">
+        <div class="filemeta" id="redactMeta"></div>
+
+        <div class="pager">
+          <button class="btn ghost" id="prevPageBtn" aria-label="Previous page">‹</button>
+          <div class="pager-info">
+            <div class="pager-page" id="pageLabel">Page 1 of 1</div>
+            <div class="pager-sub" id="boxLabel">Drag over anything you want removed</div>
+          </div>
+          <button class="btn ghost" id="nextPageBtn" aria-label="Next page">›</button>
+        </div>
+
+        <div class="stage-wrap" id="stageWrap">
+          <div class="stage" id="stage">
+            <canvas id="pageCanvas" class="page-canvas"></canvas>
+            <div class="boxes" id="boxLayer"></div>
+            <div class="stage-loading" id="stageLoading"><div class="spinner"></div></div>
+          </div>
+        </div>
+
+        <div class="tools">
+          <button class="btn ghost" id="undoBtn">↩︎ Undo</button>
+          <button class="btn ghost" id="clearPageBtn">Clear page</button>
+          <button class="btn ghost" id="clearAllBtn">Clear all</button>
+        </div>
+        <p class="opt-hint center">Drag across text, signatures or photos to cover them. Tap a box's ✕ to remove it.</p>
+
+        <div class="opt">
+          <div class="opt-label">Pages to flatten</div>
+          <div class="segmented two inline" id="flattenSeg">
+            <button data-flatten="marked" class="seg active">Redacted pages</button>
+            <button data-flatten="all" class="seg">Every page</button>
+          </div>
+          <p class="opt-hint" id="flattenHint">Redacted pages are flattened to images; untouched pages are copied through unchanged so their text stays selectable.</p>
+        </div>
+
+        <div class="opt">
+          <div class="opt-label">Saved file name</div>
+          <div class="segmented two inline" id="nameSeg">
+            <button data-name="suffix" class="seg active">Add “(redacted)”</button>
+            <button data-name="same" class="seg">Keep original name</button>
+          </div>
+          <p class="opt-hint" id="nameHint">Saves next to the original as <b>Name (redacted).pdf</b>.</p>
+        </div>
+
+        <div class="opt">
+          <div class="opt-label">Output detail <span class="val" id="rdpiVal">200 DPI</span></div>
+          <input type="range" id="rdpi" min="100" max="300" step="25" value="200" />
+          <p class="opt-hint">🔒 Redaction is permanent: each redacted page is re-rendered as a flat image with the boxes burned in, so the text, image and metadata underneath are gone — not merely hidden behind a black rectangle.</p>
+        </div>
+
+        <div class="actions">
+          <button class="btn ghost" id="redactCancelBtn">Cancel</button>
+          <button class="btn primary" id="redactRunBtn">Redact PDF</button>
+        </div>
+      </section>
+
       <!-- Step 3: progress -->
       <section class="card hidden" id="progressCard">
         <div class="prog-head">
@@ -94,12 +153,14 @@
 
       <!-- Step 4: result -->
       <section class="card hidden" id="resultCard">
-        <div class="result-icon">✅</div>
-        <h2 class="result-title">Done!</h2>
+        <div class="result-icon" id="resultIcon">✅</div>
+        <h2 class="result-title" id="resultTitle">Done!</h2>
         <div class="stats" id="stats"></div>
+        <button class="btn danger block hidden" id="replaceBtn">Replace the original file</button>
+        <button class="btn ghost block hidden" id="saveAsBtn">Save to the original folder…</button>
         <a class="btn primary block" id="saveBtn" download>Save to Files</a>
         <button class="btn ghost block" id="anotherBtn">Scan another PDF</button>
-        <p class="opt-hint center">Tap <b>Save to Files</b>, then choose the same folder your original is in to keep them together.</p>
+        <p class="opt-hint center" id="saveHint">Tap <b>Save to Files</b>, then choose the same folder your original is in to keep them together.</p>
       </section>
 
       <p class="err hidden" id="err"></p>
