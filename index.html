@@ -103,7 +103,11 @@
             <canvas id="pageCanvas" class="page-canvas"></canvas>
             <div class="boxes" id="boxLayer"></div>
           </div>
-          <button class="zoomchip hidden" id="zoomChip" type="button">100% · Fit</button>
+          <div class="zoomctl" id="zoomCtl">
+            <button class="zbtn" id="zoomOutBtn" type="button" aria-label="Zoom out">−</button>
+            <button class="zoomchip" id="zoomChip" type="button" aria-label="Fit page">100%</button>
+            <button class="zbtn" id="zoomInBtn" type="button" aria-label="Zoom in">+</button>
+          </div>
           <div class="stage-loading" id="stageLoading"><div class="spinner"></div></div>
         </div>
 
