@@ -79,7 +79,8 @@
     redactCard: $('redactCard'), redactMeta: $('redactMeta'),
     prevPageBtn: $('prevPageBtn'), nextPageBtn: $('nextPageBtn'),
     pageLabel: $('pageLabel'), boxLabel: $('boxLabel'),
-    stage: $('stage'), pageCanvas: $('pageCanvas'), boxLayer: $('boxLayer'),
+    stageWrap: $('stageWrap'), stage: $('stage'),
+    pageCanvas: $('pageCanvas'), boxLayer: $('boxLayer'),
     stageLoading: $('stageLoading'),
     undoBtn: $('undoBtn'), clearPageBtn: $('clearPageBtn'), clearAllBtn: $('clearAllBtn'),
     flattenSeg: $('flattenSeg'), flattenHint: $('flattenHint'),
@@ -405,6 +406,9 @@
     resetSaveBtn(els.saveAsBtn, state.fileHandle ? 'Save to the original folder…' : 'Save a copy…', 'ghost');
     els.replaceBtn.classList.toggle('hidden', !canReplace);
     els.saveAsBtn.classList.toggle('hidden', !canSaveWithPicker);
+    // "Save to Files" is the iOS wording; where a real save dialog exists the
+    // plain download link is just a copy.
+    els.saveBtn.textContent = canSaveWithPicker ? 'Download a copy' : 'Save to Files';
 
     els.saveHint.innerHTML = canReplace
       ? `<b>Replace the original file</b> writes the ${isRedact ? 'redacted' : 'new'} PDF straight back over ` +
@@ -739,6 +743,8 @@
   // ---- redaction editor ----
   // Boxes are stored per page in normalized coordinates (0..1) of the rendered
   // page, so they survive re-rendering at any zoom, screen size or output DPI.
+  // Tallest the page preview is drawn — matches .page-canvas max-height in CSS.
+  const STAGE_MAX_VH = 0.64;
   let editorToken = 0;   // guards against out-of-order page renders
   let draft = null;      // { el, x0, y0 } while a box is being dragged
 
@@ -800,11 +806,12 @@
     try {
       const page = await pdf.getPage(pageNum);
       const base = page.getViewport({ scale: 1 });
-      // Fit the stage width, rendered at device pixel density (capped) so the
-      // page stays crisp without allocating a huge canvas on big screens.
-      const cssWidth = els.stage.clientWidth || 320;
+      // Fit the card's width and the height cap, then render at device pixel
+      // density (capped) so the page is crisp without an oversized canvas.
+      const cssWidth = els.stageWrap.clientWidth || 320;
+      const fit = Math.min(cssWidth / base.width, (window.innerHeight * STAGE_MAX_VH) / base.height);
       const dpr = Math.min(2, window.devicePixelRatio || 1);
-      const viewport = page.getViewport({ scale: (cssWidth / base.width) * dpr });
+      const viewport = page.getViewport({ scale: Math.max(0.05, fit) * dpr });
       if (token !== editorToken) { page.cleanup(); return; }
 
       const canvas = els.pageCanvas;

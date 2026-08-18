@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
-  <meta name="theme-color" content="#0b1220" />
+  <meta name="theme-color" content="#f6f7f9" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="ScanShrink" />
   <title>ScanShrink — Scan &amp; Redact PDFs</title>
   <link rel="manifest" href="manifest.webmanifest" />
@@ -93,10 +93,12 @@
           <button class="btn ghost" id="nextPageBtn" aria-label="Next page">›</button>
         </div>
 
-        <div class="stage" id="stage">
-          <canvas id="pageCanvas" class="page-canvas"></canvas>
-          <div class="boxes" id="boxLayer"></div>
-          <div class="stage-loading" id="stageLoading"><div class="spinner"></div></div>
+        <div class="stage-wrap" id="stageWrap">
+          <div class="stage" id="stage">
+            <canvas id="pageCanvas" class="page-canvas"></canvas>
+            <div class="boxes" id="boxLayer"></div>
+            <div class="stage-loading" id="stageLoading"><div class="spinner"></div></div>
+          </div>
         </div>
 
         <div class="tools">
