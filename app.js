@@ -31,6 +31,7 @@
     pageCount: 0,
     pageNum: 1,
     redactions: {},      // pageNum -> [{x,y,w,h}] in 0..1 of the rendered page
+    editMode: 'redact',  // 'redact' (draw boxes) | 'move' (pan & zoom)
     flatten: 'marked',   // 'marked' | 'all'
     nameMode: 'suffix',  // 'suffix' | 'same' — name of the redacted output
     rDpi: 200,
@@ -82,6 +83,7 @@
     pageLabel: $('pageLabel'), boxLabel: $('boxLabel'),
     stageWrap: $('stageWrap'), stage: $('stage'),
     pageCanvas: $('pageCanvas'), boxLayer: $('boxLayer'),
+    editModeSeg: $('editModeSeg'), editHint: $('editHint'), zoomChip: $('zoomChip'),
     stageLoading: $('stageLoading'),
     undoBtn: $('undoBtn'), clearPageBtn: $('clearPageBtn'), clearAllBtn: $('clearAllBtn'),
     flattenSeg: $('flattenSeg'), flattenHint: $('flattenHint'),
@@ -134,6 +136,11 @@
     // On iOS the Files "Save to" sheet offers to replace a file of the same
     // name, which is as close to saving in place as Safari can get.
     same: 'Keeps the original file name, so saving into the original folder replaces the file there.',
+  };
+
+  const EDIT_HINTS = {
+    redact: "Drag across text, signatures or photos to cover them. Tap a box's ✕ to remove it.",
+    move: 'Drag to move the page around; pinch or double-tap to zoom. Two fingers zoom in either mode.',
   };
 
   const FLATTEN_HINTS = {
@@ -746,6 +753,10 @@
   // page, so they survive re-rendering at any zoom, screen size or output DPI.
   // Tallest the page preview is drawn — matches .page-canvas max-height in CSS.
   const STAGE_MAX_VH = 0.64;
+  // Highest zoom we re-rasterise the page for. Beyond this it magnifies, which
+  // keeps the canvas (and its memory) within reach of a phone.
+  const MAX_RENDER_ZOOM = 3;
+  let renderedScale = 1;   // zoom level the current canvas was rasterised for
   let editorToken = 0;   // guards against out-of-order page renders
   let draft = null;      // { el, x0, y0 } while a box is being dragged
 
@@ -761,6 +772,8 @@
     show(els.stageLoading);
     state.redactions = {};
     state.pageNum = 1;
+    setEditMode('redact');
+    resetView();
 
     try {
       const buf = await state.file.arrayBuffer();
@@ -786,6 +799,10 @@
     state.redactions = {};
     els.boxLayer.innerHTML = '';
     draft = null;
+    pinch = null;
+    pan = null;
+    pointers.clear();
+    resetView();
     hide(els.redactCard);
   }
 
@@ -796,12 +813,15 @@
     await renderEditorPage();
   }
 
-  async function renderEditorPage() {
+  // keepView: a re-rasterise at the current zoom, leaving the view alone.
+  async function renderEditorPage(opts) {
     const pdf = state.pdfDoc;
     if (!pdf) return;
+    const keepView = !!(opts && opts.keepView);
     const token = ++editorToken;
     const pageNum = state.pageNum;
-    show(els.stageLoading);
+    // A quality re-render keeps the old canvas on screen; no spinner flash.
+    if (!keepView) show(els.stageLoading);
     els.boxLayer.innerHTML = '';
 
     try {
@@ -810,20 +830,32 @@
       // Fit the card's width and the height cap, then render at device pixel
       // density (capped) so the page is crisp without an oversized canvas.
       const cssWidth = els.stageWrap.clientWidth || 320;
-      const fit = Math.min(cssWidth / base.width, (window.innerHeight * STAGE_MAX_VH) / base.height);
+      const fit = Math.max(0.05, Math.min(cssWidth / base.width, (window.innerHeight * STAGE_MAX_VH) / base.height));
       const dpr = Math.min(2, window.devicePixelRatio || 1);
-      const viewport = page.getViewport({ scale: Math.max(0.05, fit) * dpr });
+      // Rasterise for the zoom actually on screen, so zooming in reveals fine
+      // print instead of magnifying blur.
+      const quality = keepView ? clamp(view.scale, 1, MAX_RENDER_ZOOM) : 1;
+      const viewport = page.getViewport({ scale: fit * dpr * quality });
       if (token !== editorToken) { page.cleanup(); return; }
 
       const canvas = els.pageCanvas;
       canvas.width = Math.max(1, Math.floor(viewport.width));
       canvas.height = Math.max(1, Math.floor(viewport.height));
+      // Pin the displayed size so extra resolution never changes the layout —
+      // the stage keeps hugging the page and the box maths stays put.
+      canvas.style.width = Math.max(1, Math.floor(base.width * fit)) + 'px';
+      canvas.style.height = Math.max(1, Math.floor(base.height * fit)) + 'px';
+      renderedScale = quality;
       const ctx = canvas.getContext('2d');
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       await page.render({ canvasContext: ctx, viewport, background: '#ffffff', annotationMode: ANNOT_MODE }).promise;
       page.cleanup();
       if (token !== editorToken) return;
+      // A fresh page means the old pan/zoom no longer means anything; a
+      // re-rasterise of the same page keeps exactly where the user was.
+      if (keepView) applyView();
+      else resetView();
     } catch (err) {
       console.error(err);
       showErr('Could not render page ' + pageNum + '.');
@@ -868,10 +900,144 @@
     els.clearAllBtn.disabled = all === 0;
   }
 
-  // --- drawing boxes (pointer events cover mouse, pen and touch) ---
-  els.stage.addEventListener('pointerdown', (e) => {
+  // --- view transform: pinch / drag to zoom and pan ---
+  // The stage carries the transform, so the redaction boxes — positioned in
+  // percentages inside it — zoom and pan with the page for free, and
+  // stagePoint() keeps returning correct page coordinates at any zoom.
+  const MIN_SCALE = 1, MAX_SCALE = 8;
+  const view = { scale: 1, tx: 0, ty: 0 };
+  const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+
+  // Layout geometry, all unaffected by the transform itself.
+  function stageLayout() {
+    const wrapW = els.stageWrap.clientWidth, wrapH = els.stageWrap.clientHeight;
+    const baseW = els.stage.offsetWidth, baseH = els.stage.offsetHeight;
+    return { wrapW, wrapH, baseW, baseH, left0: (wrapW - baseW) / 2, top0: 0 };
+  }
+
+  function applyView() {
+    const L = stageLayout();
+    const w = L.baseW * view.scale, h = L.baseH * view.scale;
+    // Keep the page in the frame: centred while it fits, edge-locked once it
+    // is larger, so it can never be flung off into empty space.
+    view.tx = w <= L.wrapW ? (L.wrapW - w) / 2 - L.left0
+      : clamp(view.tx, L.wrapW - w - L.left0, -L.left0);
+    view.ty = h <= L.wrapH ? (L.wrapH - h) / 2 - L.top0
+      : clamp(view.ty, L.wrapH - h - L.top0, -L.top0);
+    els.stage.style.transform = `translate(${view.tx}px, ${view.ty}px) scale(${view.scale})`;
+    els.stage.style.setProperty('--zoom-inv', String(1 / view.scale));
+    els.zoomChip.textContent = Math.round(view.scale * 100) + '% · Fit';
+    els.zoomChip.classList.toggle('hidden', view.scale <= 1.001);
+  }
+
+  function resetView() { view.scale = 1; view.tx = 0; view.ty = 0; applyView(); }
+
+  // Once the fingers stop, redraw the page at the zoom now on screen.
+  let qualityTimer = null;
+  function scheduleQualityRender() {
+    clearTimeout(qualityTimer);
+    qualityTimer = setTimeout(() => {
+      if (!state.pdfDoc || pointers.size) return;
+      const want = clamp(view.scale, 1, MAX_RENDER_ZOOM);
+      if (Math.abs(want - renderedScale) < 0.35) return;
+      renderEditorPage({ keepView: true });
+    }, 220);
+  }
+
+  // Zoom to `scale`, keeping whatever sits under `p` (frame coords) in place.
+  function zoomAt(p, scale) {
+    const L = stageLayout();
+    const s = clamp(scale, MIN_SCALE, MAX_SCALE);
+    const cx = (p.x - L.left0 - view.tx) / view.scale;
+    const cy = (p.y - L.top0 - view.ty) / view.scale;
+    view.scale = s;
+    view.tx = p.x - L.left0 - s * cx;
+    view.ty = p.y - L.top0 - s * cy;
+    applyView();
+  }
+
+  // Frame coordinates, measured from the wrapper's *content* box — the same
+  // origin stageLayout() works in, so the border doesn't skew the anchor.
+  function framePoint(e) {
+    const r = els.stageWrap.getBoundingClientRect();
+    return {
+      x: e.clientX - r.left - els.stageWrap.clientLeft,
+      y: e.clientY - r.top - els.stageWrap.clientTop,
+    };
+  }
+
+  els.zoomChip.addEventListener('click', () => { resetView(); scheduleQualityRender(); });
+
+  // --- gestures (pointer events cover mouse, pen and touch) ---
+  // One finger draws in Redact mode and pans in Move mode; two fingers always
+  // pinch-zoom, whichever mode is on.
+  const pointers = new Map();
+  let pinch = null;      // two-finger gesture in progress
+  let pan = null;        // one-finger drag in Move mode
+  let lastTapAt = 0;     // for double-tap zoom
+
+  function startDraft(pt) {
+    const el = document.createElement('div');
+    el.className = 'rbox draft';
+    els.boxLayer.appendChild(el);
+    draft = { el, x0: pt.x, y0: pt.y };
+    sizeDraft(pt);
+  }
+
+  function cancelDraft() {
+    if (!draft) return;
+    draft.el.remove();
+    draft = null;
+  }
+
+  function commitDraft(pt) {
+    const rect = sizeDraft(pt);
+    draft.el.remove();
+    draft = null;
+    // Ignore stray taps: a box has to be big enough to mean something. The
+    // threshold is 6 *screen* pixels, so it shrinks as you zoom in.
+    const r = els.stage.getBoundingClientRect();
+    if (rect.w < 6 / Math.max(1, r.width) || rect.h < 6 / Math.max(1, r.height)) {
+      renderBoxes();
+      return;
+    }
+    boxesFor(state.pageNum).push(rect);
+    renderBoxes();
+    clearErr();
+  }
+
+  function startPinch() {
+    const [a, b] = [...pointers.values()];
+    const L = stageLayout();
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    pinch = {
+      dist: Math.hypot(a.x - b.x, a.y - b.y) || 1,
+      scale: view.scale,
+      // The point of the page between the fingers, in content coordinates —
+      // it stays put while the fingers move.
+      cx: (mx - L.left0 - view.tx) / view.scale,
+      cy: (my - L.top0 - view.ty) / view.scale,
+    };
+  }
+
+  function updatePinch() {
+    if (pointers.size < 2) return;
+    const [a, b] = [...pointers.values()];
+    const L = stageLayout();
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    const dist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+    view.scale = clamp(pinch.scale * (dist / pinch.dist), MIN_SCALE, MAX_SCALE);
+    view.tx = mx - L.left0 - view.scale * pinch.cx;
+    view.ty = my - L.top0 - view.scale * pinch.cy;
+    applyView();
+  }
+
+  els.stageWrap.addEventListener('pointerdown', (e) => {
     if (!state.pdfDoc || e.button > 0) return;
-    // Tapping a box's ✕ removes it instead of starting a new box.
+    // The zoom chip is a real button: leave it alone, or capturing the
+    // pointer here would retarget its click to the frame and swallow it.
+    if (e.target.closest('.zoomchip')) return;
+    // Tapping a box's ✕ removes it, in either mode.
     const del = e.target.closest('.rbox-del');
     if (del) {
       e.preventDefault();
@@ -880,45 +1046,96 @@
       return;
     }
     e.preventDefault();
-    const pt = stagePoint(e);
-    const el = document.createElement('div');
-    el.className = 'rbox draft';
-    els.boxLayer.appendChild(el);
-    draft = { el, x0: pt.x, y0: pt.y };
-    sizeDraft(pt);
-    try { els.stage.setPointerCapture(e.pointerId); } catch (_) {}
+    pointers.set(e.pointerId, framePoint(e));
+    try { els.stageWrap.setPointerCapture(e.pointerId); } catch (_) {}
+
+    if (pointers.size === 2) {
+      // A second finger turns any drawing or panning into a pinch.
+      cancelDraft();
+      pan = null;
+      els.stageWrap.classList.remove('panning');
+      startPinch();
+      return;
+    }
+    if (pointers.size > 2) return;
+
+    if (state.editMode === 'redact') {
+      startDraft(stagePoint(e));
+    } else {
+      pan = { p: framePoint(e), tx: view.tx, ty: view.ty, at: Date.now() };
+      els.stageWrap.classList.add('panning');
+    }
   });
 
-  els.stage.addEventListener('pointermove', (e) => {
-    if (!draft) return;
-    e.preventDefault();
-    sizeDraft(stagePoint(e));
+  els.stageWrap.addEventListener('pointermove', (e) => {
+    if (!pointers.has(e.pointerId)) return;
+    pointers.set(e.pointerId, framePoint(e));
+    if (pinch) { e.preventDefault(); updatePinch(); return; }
+    if (draft) { e.preventDefault(); sizeDraft(stagePoint(e)); return; }
+    if (pan) {
+      e.preventDefault();
+      const p = framePoint(e);
+      view.tx = pan.tx + (p.x - pan.p.x);
+      view.ty = pan.ty + (p.y - pan.p.y);
+      applyView();
+    }
   });
 
-  const endDraw = (e) => {
-    if (!draft) return;
-    const pt = stagePoint(e);
-    const rect = sizeDraft(pt);
-    draft.el.remove();
-    draft = null;
-    try { els.stage.releasePointerCapture(e.pointerId); } catch (_) {}
-    // Ignore stray taps: a box has to be big enough to mean something.
-    const minW = 6 / Math.max(1, els.stage.clientWidth);
-    const minH = 6 / Math.max(1, els.stage.clientHeight);
-    if (rect.w < minW || rect.h < minH) { renderBoxes(); return; }
-    boxesFor(state.pageNum).push(rect);
-    renderBoxes();
-    clearErr();
+  const endPointer = (e) => {
+    if (!pointers.delete(e.pointerId)) return;
+    try { els.stageWrap.releasePointerCapture(e.pointerId); } catch (_) {}
+    if (pinch) {
+      // Lift both fingers before drawing or panning again.
+      if (pointers.size < 2) pinch = null;
+      scheduleQualityRender();
+      return;
+    }
+    if (draft) { commitDraft(stagePoint(e)); return; }
+    if (pan) {
+      const p = framePoint(e);
+      const tap = Math.hypot(p.x - pan.p.x, p.y - pan.p.y) < 8 && Date.now() - pan.at < 300;
+      pan = null;
+      els.stageWrap.classList.remove('panning');
+      if (!tap) return;
+      // Double-tap toggles between fit and a close-up of the tapped spot.
+      const now = Date.now();
+      if (now - lastTapAt < 320) {
+        lastTapAt = 0;
+        zoomAt(p, view.scale > 1.001 ? MIN_SCALE : 2.5);
+      } else {
+        lastTapAt = now;
+      }
+      scheduleQualityRender();
+    }
   };
-  els.stage.addEventListener('pointerup', endDraw);
-  els.stage.addEventListener('pointercancel', endDraw);
+  els.stageWrap.addEventListener('pointerup', endPointer);
+  els.stageWrap.addEventListener('pointercancel', endPointer);
 
+  // Trackpad/mouse: pinch (ctrl+wheel) zooms, plain wheel pans once zoomed in.
+  // While the page fits, scrolling belongs to the document, not to us.
+  els.stageWrap.addEventListener('wheel', (e) => {
+    if (!state.pdfDoc) return;
+    if (e.ctrlKey) {
+      e.preventDefault();
+      zoomAt(framePoint(e), view.scale * Math.exp(-e.deltaY / 100));
+      scheduleQualityRender();
+      return;
+    }
+    if (view.scale <= 1.001) return;
+    e.preventDefault();
+    view.tx -= e.deltaX;
+    view.ty -= e.deltaY;
+    applyView();
+  }, { passive: false });
+
+  // Normalized page coordinates (0..1). The stage's rendered rect already
+  // includes the zoom/pan, so this stays correct at any view.
   function stagePoint(e) {
     const r = els.stage.getBoundingClientRect();
-    const clamp = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
+    const c = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
     return {
-      x: clamp(r.width ? (e.clientX - r.left) / r.width : 0),
-      y: clamp(r.height ? (e.clientY - r.top) / r.height : 0),
+      x: c(r.width ? (e.clientX - r.left) / r.width : 0),
+      y: c(r.height ? (e.clientY - r.top) / r.height : 0),
     };
   }
 
@@ -937,6 +1154,21 @@
   }
 
   // --- editor controls ---
+  els.editModeSeg.addEventListener('click', (e) => {
+    const btn = e.target.closest('.seg');
+    if (!btn) return;
+    setEditMode(btn.dataset.editmode);
+  });
+
+  function setEditMode(mode) {
+    state.editMode = mode === 'move' ? 'move' : 'redact';
+    [...els.editModeSeg.children].forEach((b) => b.classList.toggle('active', b.dataset.editmode === state.editMode));
+    els.stageWrap.classList.toggle('mode-move', state.editMode === 'move');
+    els.stageWrap.classList.toggle('mode-redact', state.editMode === 'redact');
+    els.editHint.textContent = EDIT_HINTS[state.editMode];
+    cancelDraft();
+  }
+
   els.prevPageBtn.addEventListener('click', () => gotoPage(state.pageNum - 1));
   els.nextPageBtn.addEventListener('click', () => gotoPage(state.pageNum + 1));
   els.undoBtn.addEventListener('click', () => { boxesFor(state.pageNum).pop(); renderBoxes(); });

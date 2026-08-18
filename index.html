@@ -93,12 +93,18 @@
           <button class="btn ghost" id="nextPageBtn" aria-label="Next page">›</button>
         </div>
 
-        <div class="stage-wrap" id="stageWrap">
+        <div class="segmented two inline modeswitch" id="editModeSeg">
+          <button data-editmode="redact" class="seg active">✏️ Redact</button>
+          <button data-editmode="move" class="seg">✋ Move &amp; zoom</button>
+        </div>
+
+        <div class="stage-wrap mode-redact" id="stageWrap">
           <div class="stage" id="stage">
             <canvas id="pageCanvas" class="page-canvas"></canvas>
             <div class="boxes" id="boxLayer"></div>
-            <div class="stage-loading" id="stageLoading"><div class="spinner"></div></div>
           </div>
+          <button class="zoomchip hidden" id="zoomChip" type="button">100% · Fit</button>
+          <div class="stage-loading" id="stageLoading"><div class="spinner"></div></div>
         </div>
 
         <div class="tools">
@@ -106,7 +112,7 @@
           <button class="btn ghost" id="clearPageBtn">Clear page</button>
           <button class="btn ghost" id="clearAllBtn">Clear all</button>
         </div>
-        <p class="opt-hint center">Drag across text, signatures or photos to cover them. Tap a box's ✕ to remove it.</p>
+        <p class="opt-hint center" id="editHint">Drag across text, signatures or photos to cover them. Tap a box's ✕ to remove it.</p>
 
         <div class="opt">
           <div class="opt-label">Pages to flatten</div>
