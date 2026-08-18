@@ -72,6 +72,12 @@ and the app swaps itself over — no reinstall needed.
   running — e.g. *Version a1b2c3d · 18 Aug 2026* — next to a **Check for updates**
   button that reports back: *✓ Up to date*, *Update found — installing…*, or
   *Offline — can't check*.
+- **If an install gets stuck**, the app notices. It compares the build it is
+  actually running against the one the server is publishing, so it can tell you
+  *⚠︎ Update ready — tap to install* even when the browser insists nothing has
+  changed. Tapping it clears the app's caches, unregisters the old worker and
+  reloads from the network. This matters most for an iPhone Home Screen app,
+  which keeps its own copy of the app and can otherwise sit on an old version.
 
 This only ever downloads the app's own code; **no document or image ever leaves
 your device.**
