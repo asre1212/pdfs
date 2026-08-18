@@ -1482,6 +1482,47 @@
     return null;
   }
 
+  // What the *server* is publishing right now. The query string keeps it away
+  // from every cache between here and GitHub Pages.
+  async function fetchDeployedVersion() {
+    try {
+      const res = await fetch('version.json?ts=' + Date.now(), { cache: 'no-store' });
+      if (res.ok) return (await res.json()).version || null;
+    } catch (_) {}
+    return null;
+  }
+
+  // True when the server has a different build from the one we are running.
+  // Checked directly because a service worker can insist it is current when
+  // it is not — which is how an installed app gets stuck on an old version.
+  async function isStale() {
+    const running = await askWorkerVersion();
+    if (!running || DEV_VERSIONS.indexOf(running) !== -1) return false;
+    const deployed = await fetchDeployedVersion();
+    if (!deployed || DEV_VERSIONS.indexOf(deployed) !== -1) return false;
+    return deployed !== running;
+  }
+
+  // Last resort: throw away every cache and worker and reload from the
+  // network. iOS keeps its own copy of an installed app's shell, so the
+  // reload is cache-busted to make sure it cannot be served the old one.
+  async function forceUpdate() {
+    setCheckState('forcing');
+    try {
+      if (window.caches) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((k) => caches.delete(k)));
+      }
+      if (navigator.serviceWorker) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map((r) => r.unregister()));
+      }
+    } catch (_) { /* clear what we can, then reload regardless */ }
+    const url = new URL(window.location.href);
+    url.searchParams.set('u', Date.now().toString(36));
+    window.location.replace(url.toString());
+  }
+
   async function showVersion() {
     els.verLabel.textContent = formatVersion(await currentVersion());
   }
@@ -1493,13 +1534,19 @@
     current: '✓ Up to date',
     offline: 'Offline — can’t check',
     error: 'Check failed — try again',
+    stale: '⚠︎ Update ready — tap to install',
+    forcing: 'Reinstalling…',
   };
   let checkResetTimer = null;
+  let forceMode = false;   // the button reinstalls instead of checking
 
   function setCheckState(name) {
     clearTimeout(checkResetTimer);
+    forceMode = name === 'stale';
     els.checkUpdateBtn.textContent = CHECK_LABELS[name];
-    els.checkUpdateBtn.disabled = name !== 'idle' && name !== 'error';
+    els.checkUpdateBtn.disabled = name !== 'idle' && name !== 'error' && name !== 'stale';
+    els.checkUpdateBtn.classList.toggle('primary', name === 'stale');
+    els.checkUpdateBtn.classList.toggle('ghost', name !== 'stale');
     // Transient outcomes fall back to the normal label so the button stays usable.
     if (name === 'current' || name === 'offline' || name === 'error') {
       checkResetTimer = setTimeout(() => setCheckState('idle'), 4000);
@@ -1522,6 +1569,10 @@
       } else if (reg.installing) {
         // watchInstallingWorker() surfaces it as soon as it is installed.
         setCheckState('found');
+      } else if (await isStale()) {
+        // The worker claims to be current but the server disagrees: the usual
+        // shape of a stuck install. Offer the reinstall.
+        setCheckState('stale');
       } else {
         await showVersion();
         setCheckState('current');
@@ -1555,6 +1606,9 @@
     reloadingForUpdate = true;
     // Ask the waiting worker to take over; controllerchange then reloads us.
     worker.postMessage({ type: 'SKIP_WAITING' });
+    // iOS does not always deliver controllerchange to an installed app, which
+    // would leave the new version installed but never shown. Reload anyway.
+    setTimeout(() => { if (reloadingForUpdate) window.location.reload(); }, 2500);
   }
 
   // Called when the app becomes idle again, to seamlessly apply a pending update.
@@ -1585,7 +1639,7 @@
   if ('serviceWorker' in navigator) {
     if (els.updateBtn) els.updateBtn.addEventListener('click', applyUpdate);
     show(els.checkUpdateBtn);
-    els.checkUpdateBtn.addEventListener('click', checkForUpdates);
+    els.checkUpdateBtn.addEventListener('click', () => (forceMode ? forceUpdate() : checkForUpdates()));
 
     // Reload once the new worker has taken control; if it took over without
     // us asking, at least re-read the version it reports.
@@ -1607,6 +1661,11 @@
           reg.update().catch(() => {});
           setInterval(() => reg.update().catch(() => {}), 30 * 60 * 1000);
           showVersion();
+          // And say so if the server is already ahead of us — a worker that
+          // has stopped updating itself will never raise this on its own.
+          setTimeout(async () => {
+            if (!pendingWorker && await isStale()) setCheckState('stale');
+          }, 3000);
         })
         .catch(() => {});
     });
