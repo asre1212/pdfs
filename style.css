@@ -40,7 +40,7 @@ html, body {
   padding: max(env(safe-area-inset-top), 16px) 16px calc(env(safe-area-inset-bottom) + 28px);
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  min-height: 100vh;min-height: 100dvh;
 }
 
 /* Header */
